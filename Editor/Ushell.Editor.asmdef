@@ -1,0 +1,18 @@
+{
+  "name": "Ushell.Editor",
+  "rootNamespace": "Ushell.Editor",
+  "references": [
+    "Ushell.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

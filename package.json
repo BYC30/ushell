@@ -1,0 +1,16 @@
+{
+  "name": "com.ushell",
+  "version": "0.1.0",
+  "displayName": "ushell",
+  "description": "Unity embedded MCP server for editor automation, code execution, logs, screenshots, PlayMode control, and builds.",
+  "unity": "2022.3",
+  "author": {
+    "name": "ushell"
+  },
+  "keywords": [
+    "unity",
+    "mcp",
+    "tools",
+    "editor"
+  ]
+}
