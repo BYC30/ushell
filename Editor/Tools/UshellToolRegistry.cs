@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEngine;
 using Ushell.Runtime;
@@ -84,21 +85,31 @@ namespace Ushell.Editor
             return new UshellToolDefinition
             {
                 Name = "get_logs",
-                Description = "Returns captured Unity log records with optional filtering by type and sequence.",
+                Description = "Returns captured Unity log records with optional filtering by type, sequence, keyword, and regex.",
                 InputSchema = SchemaForObject(new Dictionary<string, object>
                 {
                     { "logType", OptionalString() },
                     { "sinceSequence", OptionalNumber() },
+                    { "keyword", OptionalString() },
+                    { "regex", OptionalString() },
                     { "limit", OptionalNumber() }
                 }),
                 Handler = arguments =>
                 {
                     string logType = UshellArgumentReader.GetString(arguments, "logType");
                     long? sinceSequence = UshellArgumentReader.GetLong(arguments, "sinceSequence");
+                    string keyword = UshellArgumentReader.GetString(arguments, "keyword");
+                    string regexPattern = UshellArgumentReader.GetString(arguments, "regex");
                     int limit = UshellArgumentReader.GetInt(arguments, "limit") ?? 200;
+                    Regex regex;
+                    if (!TryCreateRegex(regexPattern, out regex, out string regexError))
+                    {
+                        return UshellToolEnvelope.FromError("INVALID_ARGUMENT", regexError);
+                    }
+
                     return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
-                        { "entries", UshellLogStore.GetEntries(logType, sinceSequence, limit) }
+                        { "entries", UshellLogStore.GetEntries(logType, sinceSequence, keyword, regex, limit) }
                     });
                 }
             };
@@ -403,6 +414,27 @@ namespace Ushell.Editor
         private static Dictionary<string, object> OptionalObject()
         {
             return new Dictionary<string, object> { { "type", "object" } };
+        }
+
+        private static bool TryCreateRegex(string pattern, out Regex regex, out string error)
+        {
+            regex = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(pattern))
+            {
+                return true;
+            }
+
+            try
+            {
+                regex = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                return true;
+            }
+            catch (ArgumentException exception)
+            {
+                error = $"Invalid regex pattern: {exception.Message}";
+                return false;
+            }
         }
     }
 

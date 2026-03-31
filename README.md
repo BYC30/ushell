@@ -51,7 +51,7 @@ The implementation currently supports:
 
 - `health_check`
 - `exec_editor_code`
-- `get_logs`
+- `get_logs` with optional type, sequence, keyword, and regex filtering
 - `clear_logs`
 - `capture_screenshot`
 - `enter_playmode`
@@ -76,3 +76,11 @@ All tool calls return a unified payload with:
 - Runtime invocation is intentionally constrained to registered actions rather than arbitrary runtime code execution.
 - Tool execution is marshalled back onto the Unity main thread before it touches Editor APIs.
 - The current transport implementation is POST-based JSON-RPC over the `/mcp` endpoint, with `GET` intentionally rejected for now.
+
+## Publish
+
+Run the publish script to sync the current package contents into the embedded Unity package location:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\publish.ps1
+```

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -42,7 +43,7 @@ namespace Ushell.Editor
             Application.logMessageReceivedThreaded += OnLogReceived;
         }
 
-        public static IReadOnlyList<Dictionary<string, object>> GetEntries(string logType, long? sinceSequence, int limit)
+        public static IReadOnlyList<Dictionary<string, object>> GetEntries(string logType, long? sinceSequence, string keyword, Regex regex, int limit)
         {
             lock (SyncRoot)
             {
@@ -55,6 +56,16 @@ namespace Ushell.Editor
                 if (sinceSequence.HasValue)
                 {
                     query = query.Where(record => record.Sequence > sinceSequence.Value);
+                }
+
+                if (!string.IsNullOrWhiteSpace(keyword))
+                {
+                    query = query.Where(record => ContainsKeyword(record, keyword));
+                }
+
+                if (regex != null)
+                {
+                    query = query.Where(record => MatchesRegex(record, regex));
                 }
 
                 return query
@@ -94,6 +105,27 @@ namespace Ushell.Editor
 
                 Records.Add(record);
             }
+        }
+
+        private static bool ContainsKeyword(UshellLogRecord record, string keyword)
+        {
+            return Contains(record.Message, keyword) || Contains(record.StackTrace, keyword);
+        }
+
+        private static bool MatchesRegex(UshellLogRecord record, Regex regex)
+        {
+            return Matches(record.Message, regex) || Matches(record.StackTrace, regex);
+        }
+
+        private static bool Contains(string source, string keyword)
+        {
+            return !string.IsNullOrEmpty(source)
+                && source.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool Matches(string source, Regex regex)
+        {
+            return !string.IsNullOrEmpty(source) && regex.IsMatch(source);
         }
     }
 }
