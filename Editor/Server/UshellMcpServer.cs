@@ -286,7 +286,9 @@ namespace Ushell.Editor
                 return BuildErrorResponse(id, -32601, $"Unknown tool '{toolName}'.");
             }
 
-            UshellToolEnvelope toolResult = await UshellEditorDispatcher.InvokeAsync(() => tool.Handler(arguments));
+            UshellToolEnvelope toolResult = tool.AsyncHandler != null
+                ? await UshellEditorDispatcher.InvokeAsync(() => tool.AsyncHandler(arguments))
+                : await UshellEditorDispatcher.InvokeAsync(() => Task.FromResult(tool.Handler(arguments)));
             return BuildResultResponse(id, new Dictionary<string, object>
             {
                 { "content", new object[]

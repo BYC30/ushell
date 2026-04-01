@@ -37,6 +37,56 @@ namespace Ushell.Editor
             return completionSource.Task;
         }
 
+        public static Task<T> InvokeAsync<T>(Func<Task<T>> func)
+        {
+            TaskCompletionSource<T> completionSource = new TaskCompletionSource<T>();
+            lock (SyncRoot)
+            {
+                PendingActions.Enqueue(() =>
+                {
+                    try
+                    {
+                        Task<T> task = func();
+                        if (task == null)
+                        {
+                            completionSource.SetException(new InvalidOperationException("Dispatcher function returned null task."));
+                            return;
+                        }
+
+                        task.ContinueWith(completedTask =>
+                        {
+                            if (completedTask.IsCanceled)
+                            {
+                                completionSource.SetCanceled();
+                            }
+                            else if (completedTask.IsFaulted)
+                            {
+                                AggregateException aggregateException = completedTask.Exception;
+                                if (aggregateException != null)
+                                {
+                                    completionSource.SetException(aggregateException.InnerExceptions);
+                                }
+                                else
+                                {
+                                    completionSource.SetException(new InvalidOperationException("Task faulted without aggregate exception."));
+                                }
+                            }
+                            else
+                            {
+                                completionSource.SetResult(completedTask.Result);
+                            }
+                        });
+                    }
+                    catch (Exception exception)
+                    {
+                        completionSource.SetException(exception);
+                    }
+                });
+            }
+
+            return completionSource.Task;
+        }
+
         private static void Drain()
         {
             while (true)

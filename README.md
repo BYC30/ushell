@@ -50,7 +50,7 @@ The implementation currently supports:
 ## Tool Summary
 
 - `health_check`
-- `exec_editor_code`
+- `exec_expr`
 - `get_logs` with optional type, sequence, keyword, and regex filtering
 - `clear_logs`
 - `capture_screenshot`
@@ -72,7 +72,7 @@ All tool calls return a unified payload with:
 
 - v1 is Windows Editor only.
 - The HTTP listener binds to localhost and is intended for local development workflows.
-- `exec_editor_code` uses a Roslyn-based in-memory compilation path when Roslyn compiler assemblies are available in the Editor process.
+- `exec_expr` now uses a bundled Mono evaluator session for shell-style execution and completions inside the Editor.
 - Runtime invocation is intentionally constrained to registered actions rather than arbitrary runtime code execution.
 - Tool execution is marshalled back onto the Unity main thread before it touches Editor APIs.
 - The current transport implementation is POST-based JSON-RPC over the `/mcp` endpoint, with `GET` intentionally rejected for now.

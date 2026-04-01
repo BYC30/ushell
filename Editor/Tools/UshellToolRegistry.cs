@@ -43,7 +43,7 @@ namespace Ushell.Editor
             Register(UshellEditorTools.CreateClearLogsTool());
             Register(UshellEditorTools.CreateEnterPlayModeTool());
             Register(UshellEditorTools.CreateExitPlayModeTool());
-            Register(UshellEditorTools.CreateExecEditorCodeTool());
+            Register(UshellEditorTools.CreateExecExprTool());
             Register(UshellEditorTools.CreateCaptureScreenshotTool());
             Register(UshellEditorTools.CreateBuildProjectTool());
             Register(UshellEditorTools.CreateGetBuildStatusTool());
@@ -183,12 +183,12 @@ namespace Ushell.Editor
             };
         }
 
-        public static UshellToolDefinition CreateExecEditorCodeTool()
+        public static UshellToolDefinition CreateExecExprTool()
         {
             return new UshellToolDefinition
             {
-                Name = "exec_editor_code",
-                Description = "Evaluates a C# expression inside the Unity Editor and returns its value using a Roslyn in-memory compilation path.",
+                Name = "exec_expr",
+                Description = "Executes a C# snippet inside the Unity Editor and returns the echoed input together with its result.",
                 InputSchema = SchemaForObject(new Dictionary<string, object>
                 {
                     { "expression", RequiredString() },
@@ -200,11 +200,6 @@ namespace Ushell.Editor
                 {
                     UshellSettings settings = UshellSettings.Instance;
                     bool confirm = UshellArgumentReader.GetBool(arguments, "confirm") ?? false;
-                    if (settings.DangerousOperationRequireConfirm && !confirm)
-                    {
-                        return UshellToolEnvelope.FromError("UNAUTHORIZED_OPERATION", "exec_editor_code requires confirm=true when dangerous-operation confirmation is enabled.");
-                    }
-
                     string expression = UshellArgumentReader.GetString(arguments, "expression");
                     if (string.IsNullOrWhiteSpace(expression))
                     {
@@ -213,14 +208,35 @@ namespace Ushell.Editor
 
                     int timeoutMs = UshellArgumentReader.GetInt(arguments, "timeoutMs") ?? settings.MaxExecutionSeconds * 1000;
                     bool captureLogs = UshellArgumentReader.GetBool(arguments, "captureLogs") ?? true;
+                    Dictionary<string, object> echoedArguments = CreateExecExprEcho(expression, timeoutMs, captureLogs, confirm);
+
+                    if (settings.DangerousOperationRequireConfirm && !confirm)
+                    {
+                        return UshellToolEnvelope.FromError(
+                            "UNAUTHORIZED_OPERATION",
+                            "exec_expr requires confirm=true when dangerous-operation confirmation is enabled.",
+                            new Dictionary<string, object>
+                            {
+                                { "arguments", echoedArguments }
+                            });
+                    }
+
                     UshellCodeExecutionResult result = UshellRoslynExecutor.Execute(expression, captureLogs, timeoutMs);
                     if (!result.Success)
                     {
-                        return UshellToolEnvelope.FromError(result.ErrorCode, result.ErrorMessage, result.Details);
+                        return UshellToolEnvelope.FromError(
+                            result.ErrorCode,
+                            result.ErrorMessage,
+                            new Dictionary<string, object>
+                            {
+                                { "arguments", echoedArguments },
+                                { "execution", result.Details }
+                            });
                     }
 
                     UshellToolEnvelope envelope = UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
+                        { "arguments", echoedArguments },
                         { "returnValue", result.ReturnValue },
                         { "durationMs", result.DurationMs }
                     });
@@ -309,9 +325,22 @@ namespace Ushell.Editor
                 {
                     { "forceSynchronousImport", OptionalBoolean() }
                 }),
-                Handler = arguments =>
+                AsyncHandler = async arguments =>
                 {
                     bool forceSynchronousImport = UshellArgumentReader.GetBool(arguments, "forceSynchronousImport") ?? false;
+                    if (EditorApplication.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
+                    {
+                        UshellRefreshPreparationResult preparation = await UshellEditorUtility.PrepareRefreshWhilePlayingAsync();
+                        if (!preparation.Allowed)
+                        {
+                            return UshellToolEnvelope.FromError("REFRESH_REJECTED", preparation.Error, new Dictionary<string, object>
+                            {
+                                { "forceSynchronousImport", forceSynchronousImport },
+                                { "playModeConfirmation", preparation.State }
+                            });
+                        }
+                    }
+
                     ImportAssetOptions options = forceSynchronousImport
                         ? ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport
                         : ImportAssetOptions.ForceUpdate;
@@ -321,6 +350,7 @@ namespace Ushell.Editor
                     {
                         { "refreshed", true },
                         { "forceSynchronousImport", forceSynchronousImport },
+                        { "playModeStopped", !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode },
                         { "isCompiling", EditorApplication.isCompiling },
                         { "isUpdating", EditorApplication.isUpdating }
                     });
@@ -414,6 +444,17 @@ namespace Ushell.Editor
         private static Dictionary<string, object> OptionalObject()
         {
             return new Dictionary<string, object> { { "type", "object" } };
+        }
+
+        private static Dictionary<string, object> CreateExecExprEcho(string expression, int timeoutMs, bool captureLogs, bool confirm)
+        {
+            return new Dictionary<string, object>
+            {
+                { "expression", expression },
+                { "timeoutMs", timeoutMs },
+                { "captureLogs", captureLogs },
+                { "confirm", confirm }
+            };
         }
 
         private static bool TryCreateRegex(string pattern, out Regex regex, out string error)

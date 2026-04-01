@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Ushell.Editor
 {
@@ -68,6 +69,7 @@ namespace Ushell.Editor
         public string Description;
         public Dictionary<string, object> InputSchema;
         public Func<Dictionary<string, object>, UshellToolEnvelope> Handler;
+        public Func<Dictionary<string, object>, Task<UshellToolEnvelope>> AsyncHandler;
 
         public Dictionary<string, object> ToMcpDictionary()
         {

@@ -2,19 +2,83 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 using Ushell.Runtime;
 
 namespace Ushell.Editor
 {
+    public sealed class UshellRefreshPreparationResult
+    {
+        public bool Allowed;
+        public string Error;
+        public string State;
+    }
+
     public static class UshellEditorUtility
     {
+        private const double RefreshPlayModeTimeoutSeconds = 10d;
+
         public static void ClearUnityConsole()
         {
             Type logEntriesType = Type.GetType("UnityEditor.LogEntries, UnityEditor.dll");
             MethodInfo clearMethod = logEntriesType?.GetMethod("Clear", BindingFlags.Public | BindingFlags.Static);
             clearMethod?.Invoke(null, null);
+        }
+
+        public static async Task<UshellRefreshPreparationResult> PrepareRefreshWhilePlayingAsync()
+        {
+            UshellRefreshPreparationResult result = new UshellRefreshPreparationResult
+            {
+                Allowed = true,
+                State = "not_required"
+            };
+
+            if (!EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return result;
+            }
+
+            UshellModalDialogResult decision = await UshellModalDialogWindow.ShowConfirmationAsync(
+                "Refresh Assets",
+                "Unity 当前正在 Play。继续刷新会先停止 Play 模式，然后再刷新资源。是否允许继续？",
+                "允许刷新",
+                "拒绝刷新",
+                RefreshPlayModeTimeoutSeconds);
+
+            result.State = ToDecisionState(decision);
+            if (decision == UshellModalDialogResult.Cancelled)
+            {
+                result.Allowed = false;
+                result.Error = "User rejected refresh while Unity was in Play mode.";
+                return result;
+            }
+
+            if (decision == UshellModalDialogResult.TimedOut)
+            {
+                result.Allowed = false;
+                result.Error = "Refresh was rejected because the Play mode confirmation timed out after 10 seconds.";
+                return result;
+            }
+
+            if (!EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                result.State = "confirmed";
+                return result;
+            }
+
+            EditorApplication.isPlaying = false;
+            if (await WaitForConditionAsync(() => !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode, RefreshPlayModeTimeoutSeconds))
+            {
+                result.State = "confirmed";
+                return result;
+            }
+
+            result.Allowed = false;
+            result.State = "playmode_exit_timeout";
+            result.Error = "Refresh was rejected because Unity did not exit Play mode within 10 seconds.";
+            return result;
         }
 
         public static bool TryCaptureGameView(string outputPath, out Dictionary<string, object> payload, out string error)
@@ -128,6 +192,54 @@ namespace Ushell.Editor
             texture.SetPixels(pixels);
             texture.Apply();
             return texture;
+        }
+
+        private static Task<bool> WaitForConditionAsync(Func<bool> predicate, double timeoutSeconds)
+        {
+            if (predicate == null)
+            {
+                throw new ArgumentNullException(nameof(predicate));
+            }
+
+            if (predicate())
+            {
+                return Task.FromResult(true);
+            }
+
+            TaskCompletionSource<bool> completionSource = new TaskCompletionSource<bool>();
+            double deadline = EditorApplication.timeSinceStartup + Math.Max(1d, timeoutSeconds);
+
+            void OnUpdate()
+            {
+                if (predicate())
+                {
+                    EditorApplication.update -= OnUpdate;
+                    completionSource.TrySetResult(true);
+                    return;
+                }
+
+                if (EditorApplication.timeSinceStartup >= deadline)
+                {
+                    EditorApplication.update -= OnUpdate;
+                    completionSource.TrySetResult(false);
+                }
+            }
+
+            EditorApplication.update += OnUpdate;
+            return completionSource.Task;
+        }
+
+        private static string ToDecisionState(UshellModalDialogResult decision)
+        {
+            switch (decision)
+            {
+                case UshellModalDialogResult.Confirmed:
+                    return "confirmed";
+                case UshellModalDialogResult.TimedOut:
+                    return "timed_out";
+                default:
+                    return "cancelled";
+            }
         }
     }
 }
