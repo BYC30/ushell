@@ -85,14 +85,15 @@ namespace Ushell.Editor
             return new UshellToolDefinition
             {
                 Name = "get_logs",
-                Description = "Returns captured Unity log records with optional filtering by type, sequence, keyword, and regex.",
+                Description = "Returns captured Unity log records with optional filtering by type, sequence, keyword, and regex, and can clear logs after reading.",
                 InputSchema = SchemaForObject(new Dictionary<string, object>
                 {
                     { "logType", OptionalString() },
                     { "sinceSequence", OptionalNumber() },
                     { "keyword", OptionalString() },
                     { "regex", OptionalString() },
-                    { "limit", OptionalNumber() }
+                    { "limit", OptionalNumber() },
+                    { "clearAfterRead", OptionalBoolean() }
                 }),
                 Handler = arguments =>
                 {
@@ -101,15 +102,24 @@ namespace Ushell.Editor
                     string keyword = UshellArgumentReader.GetString(arguments, "keyword");
                     string regexPattern = UshellArgumentReader.GetString(arguments, "regex");
                     int limit = UshellArgumentReader.GetInt(arguments, "limit") ?? 200;
+                    bool clearAfterRead = UshellArgumentReader.GetBool(arguments, "clearAfterRead") ?? false;
                     Regex regex;
                     if (!TryCreateRegex(regexPattern, out regex, out string regexError))
                     {
                         return UshellToolEnvelope.FromError("INVALID_ARGUMENT", regexError);
                     }
 
+                    IReadOnlyList<Dictionary<string, object>> entries = UshellLogStore.GetEntries(logType, sinceSequence, keyword, regex, limit);
+                    if (clearAfterRead)
+                    {
+                        UshellLogStore.Clear();
+                        UshellEditorUtility.ClearUnityConsole();
+                    }
+
                     return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
-                        { "entries", UshellLogStore.GetEntries(logType, sinceSequence, keyword, regex, limit) }
+                        { "entries", entries },
+                        { "cleared", clearAfterRead }
                     });
                 }
             };

@@ -51,7 +51,7 @@ The implementation currently supports:
 
 - `health_check`
 - `exec_expr`
-- `get_logs` with optional type, sequence, keyword, and regex filtering
+- `get_logs` with optional type, sequence, keyword, regex filtering, and an optional clear-after-read switch
 - `clear_logs`
 - `capture_screenshot`
 - `enter_playmode`

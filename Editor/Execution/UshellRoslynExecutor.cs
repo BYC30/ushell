@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using Mono.CSharp;
 using UnityEngine;
@@ -31,11 +33,172 @@ namespace Ushell.Editor
         }
     }
 
+    internal sealed class UshellEvaluationOutput
+    {
+        public object ReturnValue;
+        public List<string> Warnings = new List<string>();
+    }
+
+    internal sealed class UshellCompileDiagnostic
+    {
+        public string Severity;
+        public string Code;
+        public string Message;
+        public string Location;
+        public string FormattedMessage;
+    }
+
+    internal sealed class UshellCompilationException : InvalidOperationException
+    {
+        public IReadOnlyList<UshellCompileDiagnostic> Diagnostics { get; }
+        public string DetailedMessage { get; }
+
+        public UshellCompilationException(IReadOnlyList<UshellCompileDiagnostic> diagnostics)
+            : base(CreateSummaryMessage(diagnostics))
+        {
+            Diagnostics = diagnostics ?? Array.Empty<UshellCompileDiagnostic>();
+            DetailedMessage = CreateDetailedMessage(Diagnostics);
+        }
+
+        private static string CreateSummaryMessage(IReadOnlyList<UshellCompileDiagnostic> diagnostics)
+        {
+            if (diagnostics == null || diagnostics.Count == 0)
+            {
+                return "Compilation failed.";
+            }
+
+            UshellCompileDiagnostic firstError = diagnostics.FirstOrDefault(item => string.Equals(item?.Severity, "error", StringComparison.OrdinalIgnoreCase));
+            if (firstError == null)
+            {
+                firstError = diagnostics[0];
+            }
+
+            int errorCount = diagnostics.Count(item => string.Equals(item?.Severity, "error", StringComparison.OrdinalIgnoreCase));
+            if (errorCount <= 1)
+            {
+                return firstError.FormattedMessage ?? "Compilation failed.";
+            }
+
+            return $"Compilation failed with {errorCount} errors. First error: {firstError.FormattedMessage}";
+        }
+
+        private static string CreateDetailedMessage(IReadOnlyList<UshellCompileDiagnostic> diagnostics)
+        {
+            if (diagnostics == null || diagnostics.Count == 0)
+            {
+                return "Compilation failed.";
+            }
+
+            StringBuilder builder = new StringBuilder();
+            for (int index = 0; index < diagnostics.Count; index++)
+            {
+                UshellCompileDiagnostic diagnostic = diagnostics[index];
+                if (diagnostic == null || string.IsNullOrWhiteSpace(diagnostic.FormattedMessage))
+                {
+                    continue;
+                }
+
+                if (builder.Length > 0)
+                {
+                    builder.AppendLine();
+                }
+
+                builder.Append(diagnostic.FormattedMessage);
+            }
+
+            return builder.Length == 0 ? "Compilation failed." : builder.ToString();
+        }
+    }
+
+    internal sealed class UshellCollectingReportPrinter : ConsoleReportPrinter
+    {
+        private readonly StringWriter _writer;
+        private readonly List<UshellCompileDiagnostic> _diagnostics = new List<UshellCompileDiagnostic>();
+
+        public UshellCollectingReportPrinter()
+            : this(new StringWriter())
+        {
+        }
+
+        private UshellCollectingReportPrinter(StringWriter writer)
+            : base(writer)
+        {
+            _writer = writer;
+        }
+
+        public override void Print(AbstractMessage message, bool showFullPath)
+        {
+            base.Print(message, showFullPath);
+            _diagnostics.Add(new UshellCompileDiagnostic
+            {
+                Severity = message.IsWarning ? "warning" : "error",
+                Code = $"CS{message.Code:D4}",
+                Message = message.Text,
+                Location = FormatLocation(message.Location),
+                FormattedMessage = FormatDiagnostic(message)
+            });
+        }
+
+        public void ClearDiagnostics()
+        {
+            _diagnostics.Clear();
+            _writer.GetStringBuilder().Clear();
+            Reset();
+        }
+
+        public List<UshellCompileDiagnostic> GetDiagnosticsSnapshot()
+        {
+            return _diagnostics.Select(item => new UshellCompileDiagnostic
+            {
+                Severity = item.Severity,
+                Code = item.Code,
+                Message = item.Message,
+                Location = item.Location,
+                FormattedMessage = item.FormattedMessage
+            }).ToList();
+        }
+
+        public List<string> GetWarningMessages()
+        {
+            return _diagnostics
+                .Where(item => item != null && string.Equals(item.Severity, "warning", StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.FormattedMessage)
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .ToList();
+        }
+
+        public bool HasErrors()
+        {
+            return _diagnostics.Any(item => item != null && string.Equals(item.Severity, "error", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string FormatDiagnostic(AbstractMessage message)
+        {
+            string code = $"CS{message.Code:D4}";
+            string location = FormatLocation(message.Location);
+            string text = string.IsNullOrWhiteSpace(message.Text) ? "Compilation failed." : message.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                return $"{code}: {text}";
+            }
+
+            return $"{code} {location}: {text}";
+        }
+
+        private static string FormatLocation(Location location)
+        {
+            string value = location.ToString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+    }
+
     internal sealed class UshellMonoEvaluatorSession
     {
         private readonly object _syncRoot = new object();
 
         private Evaluator _evaluator;
+        private UshellCollectingReportPrinter _reportPrinter;
         private bool _initialized;
         private string _initializationError;
         private int _completionHandle;
@@ -72,7 +235,7 @@ namespace Ushell.Editor
             });
         }
 
-        public object Evaluate(string command)
+        public UshellEvaluationOutput Evaluate(string command)
         {
             EnsureInitialized();
             string initializationError = GetInitializationError();
@@ -90,21 +253,28 @@ namespace Ushell.Editor
                 }
 
                 string workingCommand = normalized;
+                ResetCompilationDiagnostics();
                 CompiledMethod compiled = _evaluator.Compile(workingCommand);
                 if (compiled == null && !workingCommand.TrimEnd().EndsWith(";") && !workingCommand.TrimEnd().EndsWith("}"))
                 {
                     workingCommand += ";";
+                    ResetCompilationDiagnostics();
                     compiled = _evaluator.Compile(workingCommand);
                 }
 
-                if (compiled == null)
+                if (compiled == null || _reportPrinter.HasErrors())
                 {
-                    throw new InvalidOperationException("Compilation failed.");
+                    List<UshellCompileDiagnostic> diagnostics = _reportPrinter.GetDiagnosticsSnapshot();
+                    throw new UshellCompilationException(diagnostics);
                 }
 
                 object result = null;
                 compiled(ref result);
-                return result;
+                return new UshellEvaluationOutput
+                {
+                    ReturnValue = result,
+                    Warnings = _reportPrinter.GetWarningMessages()
+                };
             }
         }
 
@@ -166,7 +336,8 @@ namespace Ushell.Editor
 
                 try
                 {
-                    _evaluator = new Evaluator(new CompilerContext(new CompilerSettings(), new ConsoleReportPrinter()));
+                    _reportPrinter = new UshellCollectingReportPrinter();
+                    _evaluator = new Evaluator(new CompilerContext(new CompilerSettings(), _reportPrinter));
                     foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies().Where(item => item != null))
                     {
                         try
@@ -193,6 +364,7 @@ namespace Ushell.Editor
                 catch (Exception exception)
                 {
                     _evaluator = null;
+                    _reportPrinter = null;
                     _initializationError = exception.ToString();
                 }
                 finally
@@ -209,6 +381,11 @@ namespace Ushell.Editor
             {
                 return _initializationError;
             }
+        }
+
+        private void ResetCompilationDiagnostics()
+        {
+            _reportPrinter?.ClearDiagnostics();
         }
 
         private static string NormalizeCommand(string command)
@@ -276,15 +453,17 @@ namespace Ushell.Editor
             UshellEvaluatorGlobals.SetCurrentContext(context);
             try
             {
-                object returnValue = Session.Evaluate(expression);
+                UshellEvaluationOutput execution = Session.Evaluate(expression);
                 stopwatch.Stop();
 
                 UshellCodeExecutionResult result = new UshellCodeExecutionResult
                 {
                     Success = true,
-                    ReturnValue = returnValue,
+                    ReturnValue = execution.ReturnValue,
                     DurationMs = stopwatch.ElapsedMilliseconds
                 };
+
+                result.Warnings.AddRange(execution.Warnings);
 
                 if (captureLogs)
                 {
@@ -300,6 +479,21 @@ namespace Ushell.Editor
                 }
 
                 return result;
+            }
+            catch (UshellCompilationException exception)
+            {
+                stopwatch.Stop();
+                UshellCodeExecutionResult failed = Failed("COMPILE_ERROR", exception.Message, exception.DetailedMessage);
+                failed.DurationMs = stopwatch.ElapsedMilliseconds;
+                if (captureLogs)
+                {
+                    lock (logSync)
+                    {
+                        failed.Logs.AddRange(capturedLogs);
+                    }
+                }
+
+                return failed;
             }
             catch (Exception exception)
             {
