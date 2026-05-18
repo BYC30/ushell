@@ -7,13 +7,13 @@ namespace Ushell.Editor
 {
     public sealed class UshellSettings
     {
-        private const string KeyPrefix = "ushell.settings.";
-        private const string PortKey = KeyPrefix + "port";
-        private const string AllowedPathsKey = KeyPrefix + "allowedPaths";
-        private const string DangerousConfirmKey = KeyPrefix + "dangerousConfirm";
-        private const string MaxExecutionSecondsKey = KeyPrefix + "maxExecutionSeconds";
-        private const string DefaultBuildOutputRootKey = KeyPrefix + "defaultBuildOutputRoot";
-        private const string EnableVerboseLogsKey = KeyPrefix + "enableVerboseLogs";
+        private static readonly string KeyPrefix = "ushell.settings." + UshellPaths.ProjectKey + ".";
+        private static readonly string PortKey = KeyPrefix + "port";
+        private static readonly string AllowedPathsKey = KeyPrefix + "allowedPaths";
+        private static readonly string DangerousConfirmKey = KeyPrefix + "dangerousConfirm";
+        private static readonly string MaxExecutionSecondsKey = KeyPrefix + "maxExecutionSeconds";
+        private static readonly string DefaultBuildOutputRootKey = KeyPrefix + "defaultBuildOutputRoot";
+        private static readonly string EnableVerboseLogsKey = KeyPrefix + "enableVerboseLogs";
 
         private static readonly Lazy<UshellSettings> LazyInstance = new Lazy<UshellSettings>(Load);
 

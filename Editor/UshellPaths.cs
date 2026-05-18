@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -9,6 +12,36 @@ namespace Ushell.Editor
     public static class UshellPaths
     {
         public static string ProjectPath => Directory.GetParent(Application.dataPath)?.FullName ?? Directory.GetCurrentDirectory();
+
+        public static string PackagePath
+        {
+            get
+            {
+                UnityEditor.PackageManager.PackageInfo packageInfo = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(UshellPaths).Assembly);
+                if (packageInfo != null && !string.IsNullOrWhiteSpace(packageInfo.resolvedPath))
+                {
+                    return packageInfo.resolvedPath;
+                }
+
+                string[] guids = AssetDatabase.FindAssets("Ushell.Editor t:asmdef");
+                foreach (string guid in guids)
+                {
+                    string assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                    if (assetPath.EndsWith("Editor/Ushell.Editor.asmdef", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Path.GetFullPath(Path.Combine(ProjectPath, Path.GetDirectoryName(assetPath), ".."));
+                    }
+                }
+
+                return ProjectPath;
+            }
+        }
+
+        public static string McpServerExecutablePath => Path.Combine(PackagePath, "Server", "publish", "Ushell.McpServer.exe");
+
+        public static string ProjectKey => StableHash(ProjectPath);
+
+        public static string BridgePipeName => "ushell-" + ProjectKey;
 
         public static string ResolveOutputPath(string requestedPath, string folderName, string defaultFileName)
         {
@@ -72,6 +105,21 @@ namespace Ushell.Editor
         {
             string fullPath = Path.IsPathRooted(path) ? path : Path.Combine(ProjectPath, path);
             return Path.GetFullPath(fullPath);
+        }
+
+        private static string StableHash(string value)
+        {
+            using (MD5 md5 = MD5.Create())
+            {
+                byte[] bytes = md5.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty));
+                StringBuilder builder = new StringBuilder(16);
+                for (int index = 0; index < 8 && index < bytes.Length; index++)
+                {
+                    builder.Append(bytes[index].ToString("x2"));
+                }
+
+                return builder.ToString();
+            }
         }
     }
 }

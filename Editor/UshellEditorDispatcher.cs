@@ -10,10 +10,16 @@ namespace Ushell.Editor
     {
         private static readonly Queue<Action> PendingActions = new Queue<Action>();
         private static readonly object SyncRoot = new object();
+        private static bool _drainScheduled;
 
         static UshellEditorDispatcher()
         {
             EditorApplication.update += Drain;
+        }
+
+        public static void EnsureInitialized()
+        {
+            // Forces the InitializeOnLoad static constructor to run on Unity's main thread.
         }
 
         public static Task<T> InvokeAsync<T>(Func<T> func)
@@ -32,6 +38,7 @@ namespace Ushell.Editor
                         completionSource.SetException(exception);
                     }
                 });
+                ScheduleDrainLocked();
             }
 
             return completionSource.Task;
@@ -82,13 +89,30 @@ namespace Ushell.Editor
                         completionSource.SetException(exception);
                     }
                 });
+                ScheduleDrainLocked();
             }
 
             return completionSource.Task;
         }
 
+        private static void ScheduleDrainLocked()
+        {
+            if (_drainScheduled)
+            {
+                return;
+            }
+
+            _drainScheduled = true;
+            EditorApplication.delayCall += Drain;
+        }
+
         private static void Drain()
         {
+            lock (SyncRoot)
+            {
+                _drainScheduled = false;
+            }
+
             while (true)
             {
                 Action action;

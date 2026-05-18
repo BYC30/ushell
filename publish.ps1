@@ -1,10 +1,13 @@
 param(
-    [string]$Destination = "E:\MLBB_ECS\Packages\com.ushell"
+    [string]$Destination = "F:\autobuild\AndroidSimpleProject_mlbb_2.1.72.1186.1\Packages\com.ushell",
+    [switch]$SkipMcpServerBuild
 )
 
 $ErrorActionPreference = "Stop"
 
 $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$mcpServerProject = Join-Path $sourceRoot "Server~\Ushell.McpServer\Ushell.McpServer.csproj"
+$mcpServerPublishDir = Join-Path $sourceRoot "Server\publish"
 $excludedDirectories = @(
     ".git",
     ".vs",
@@ -31,13 +34,29 @@ function ShouldSkipPath {
         [string]$RelativePath
     )
 
+    $segments = $RelativePath -split '[\\/]'
     foreach ($name in $excludedDirectories) {
-        if ($RelativePath -eq $name -or $RelativePath.StartsWith($name + "\")) {
+        if ($segments -contains $name) {
             return $true
         }
     }
 
     return $false
+}
+
+if (-not $SkipMcpServerBuild) {
+    if (!(Test-Path -LiteralPath $mcpServerProject)) {
+        throw "MCP server project not found: $mcpServerProject"
+    }
+
+    dotnet publish $mcpServerProject `
+        -c Release `
+        -r win-x64 `
+        --self-contained true `
+        /p:PublishSingleFile=true `
+        /p:DebugType=None `
+        /p:DebugSymbols=false `
+        -o $mcpServerPublishDir
 }
 
 if (!(Test-Path -LiteralPath $Destination)) {

@@ -73,7 +73,9 @@ namespace Ushell.Editor
                     { "isPlaying", EditorApplication.isPlaying },
                     { "isCompiling", EditorApplication.isCompiling },
                     { "isUpdating", EditorApplication.isUpdating },
-                    { "serviceState", UshellMcpServer.GetStatusSnapshot() },
+                    { "serviceState", UshellMcpProcessSupervisor.GetStatusSnapshot() },
+                    { "bridgeState", UshellEditorBridgeServer.GetStatusSnapshot() },
+                    { "refreshState", UshellRefreshTracker.GetLatestStatus() },
                     { "registeredTools", UshellToolRegistry.GetAll().Select(tool => tool.Name).ToArray() },
                     { "registeredRuntimeActions", UshellRuntimeBridge.GetRegisteredActionNames().ToArray() }
                 })
@@ -333,11 +335,13 @@ namespace Ushell.Editor
                 Description = "Refreshes the Unity AssetDatabase so externally modified files are reimported and script compilation can start.",
                 InputSchema = SchemaForObject(new Dictionary<string, object>
                 {
-                    { "forceSynchronousImport", OptionalBoolean() }
+                    { "forceSynchronousImport", OptionalBoolean() },
+                    { "timeoutMs", OptionalNumber() }
                 }),
                 AsyncHandler = async arguments =>
                 {
                     bool forceSynchronousImport = UshellArgumentReader.GetBool(arguments, "forceSynchronousImport") ?? false;
+                    int timeoutMs = UshellArgumentReader.GetInt(arguments, "timeoutMs") ?? 120000;
                     if (EditorApplication.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
                     {
                         UshellRefreshPreparationResult preparation = await UshellEditorUtility.PrepareRefreshWhilePlayingAsync();
@@ -355,11 +359,14 @@ namespace Ushell.Editor
                         ? ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport
                         : ImportAssetOptions.ForceUpdate;
 
-                    AssetDatabase.Refresh(options);
+                    Dictionary<string, object> refreshStatus = UshellRefreshTracker.ScheduleRefresh(options);
                     return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
-                        { "refreshed", true },
+                        { "accepted", true },
+                        { "refreshRequestId", refreshStatus.TryGetValue("requestId", out object requestId) ? requestId : null },
+                        { "refreshState", refreshStatus },
                         { "forceSynchronousImport", forceSynchronousImport },
+                        { "timeoutMs", timeoutMs },
                         { "playModeStopped", !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode },
                         { "isCompiling", EditorApplication.isCompiling },
                         { "isUpdating", EditorApplication.isUpdating }

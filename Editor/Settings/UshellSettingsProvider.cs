@@ -30,16 +30,25 @@ namespace Ushell.Editor
             UshellSettings settings = UshellSettings.Instance;
 
             EditorGUILayout.LabelField("Server", EditorStyles.boldLabel);
+            int previousPort = settings.Port;
             int port = EditorGUILayout.IntField("Port", settings.Port);
             if (port != settings.Port)
             {
                 settings.Port = port;
                 settings.SaveNow();
-                UshellMcpServer.Restart();
+                UshellMcpProcessSupervisor.Restart(previousPort);
             }
 
-            EditorGUILayout.LabelField("Status", UshellMcpServer.GetStatusSummary());
-            string lastError = UshellMcpServer.GetLastError();
+            EditorGUILayout.LabelField("MCP Process", UshellMcpProcessSupervisor.GetStatusSummary());
+            Dictionary<string, object> serviceState = UshellMcpProcessSupervisor.GetStatusSnapshot();
+            EditorGUILayout.LabelField("Endpoint", serviceState["endpoint"]?.ToString());
+            if (serviceState.TryGetValue("usingAlternatePort", out object usingAlternatePortValue) && usingAlternatePortValue is bool usingAlternatePort && usingAlternatePort)
+            {
+                EditorGUILayout.HelpBox($"Preferred port {serviceState["preferredPort"]} is in use. This Unity instance is using {serviceState["port"]}.", MessageType.Info);
+            }
+
+            EditorGUILayout.LabelField("Bridge", UshellEditorBridgeServer.GetStatusSnapshot()["state"]?.ToString());
+            string lastError = UshellMcpProcessSupervisor.GetLastError();
             if (!string.IsNullOrWhiteSpace(lastError))
             {
                 EditorGUILayout.HelpBox(lastError, MessageType.Warning);

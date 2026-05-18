@@ -15,6 +15,7 @@
 /.idea/
 /.vscode/
 *.csproj
+!Server~/Ushell.McpServer/Ushell.McpServer.csproj
 *.unityproj
 *.sln
 *.suo
@@ -31,6 +32,9 @@
 
 # Package-local outputs
 /UshellOutput/
+/Server/publish/
+/Server~/Ushell.McpServer/bin/
+/Server~/Ushell.McpServer/obj/
 
 # OS files
 .DS_Store
