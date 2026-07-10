@@ -50,7 +50,7 @@ internal static class ToolCatalog
                 ["name"] = RequiredString(),
                 ["payload"] = Object()
             }, "name")),
-            Tool("assign_task", "Creates a human-facing Unity task, waits until it completes, and returns captured matching logs and button invocation records.", Schema(new()
+            Tool("assign_task", "Creates a human-facing Unity task, waits until it completes or reaches a step, and returns captured matching logs and invocation records.", Schema(new()
             {
                 ["description"] = RequiredString(),
                 ["logKeyword"] = RequiredString(),
@@ -68,8 +68,55 @@ internal static class ToolCatalog
                     ["expression"] = RequiredString(),
                     ["confirm"] = Bool()
                 }, "keyword", "expression"),
+                ["autoTriggers"] = Array(Object(new()
+                {
+                    ["keyword"] = RequiredString(),
+                    ["description"] = String(),
+                    ["expression"] = RequiredString(),
+                    ["confirm"] = Bool()
+                }, "keyword", "expression")),
+                ["steps"] = Array(Object(new()
+                {
+                    ["stepId"] = String(),
+                    ["keyword"] = RequiredString(),
+                    ["description"] = String()
+                }, "keyword")),
                 ["timeoutMs"] = Number()
             }, "description", "logKeyword", "completionKeyword")),
+            Tool("continue_task", "Reconfigures a step-reached task and waits for its next step or completion.", Schema(new()
+            {
+                ["taskId"] = RequiredString(),
+                ["description"] = String(),
+                ["logKeyword"] = RequiredString(),
+                ["completionKeyword"] = RequiredString(),
+                ["buttons"] = Array(Object(new()
+                {
+                    ["label"] = RequiredString(),
+                    ["description"] = String(),
+                    ["expression"] = RequiredString()
+                }, "label", "expression")),
+                ["autoTrigger"] = Object(new()
+                {
+                    ["keyword"] = RequiredString(),
+                    ["description"] = String(),
+                    ["expression"] = RequiredString(),
+                    ["confirm"] = Bool()
+                }, "keyword", "expression"),
+                ["autoTriggers"] = Array(Object(new()
+                {
+                    ["keyword"] = RequiredString(),
+                    ["description"] = String(),
+                    ["expression"] = RequiredString(),
+                    ["confirm"] = Bool()
+                }, "keyword", "expression")),
+                ["steps"] = Array(Object(new()
+                {
+                    ["stepId"] = String(),
+                    ["keyword"] = RequiredString(),
+                    ["description"] = String()
+                }, "keyword")),
+                ["timeoutMs"] = Number()
+            }, "taskId", "logKeyword", "completionKeyword")),
             Tool("list_tasks", "Lists AI task summaries from the current Unity Editor process memory.", Schema(new()
             {
                 ["includeCompleted"] = Bool(),

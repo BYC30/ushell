@@ -50,6 +50,7 @@ namespace Ushell.Editor
             Register(UshellEditorTools.CreateRefreshAssetsTool());
             Register(UshellEditorTools.CreateRuntimeInvokeTool());
             Register(UshellTaskTools.CreateAssignTaskTool());
+            Register(UshellTaskTools.CreateContinueTaskTool());
             Register(UshellTaskTools.CreateListTasksTool());
             Register(UshellTaskTools.CreateGetTaskTool());
         }

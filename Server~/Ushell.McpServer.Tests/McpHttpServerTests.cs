@@ -123,6 +123,105 @@ public sealed class McpHttpServerTests
     }
 
     [Fact]
+    public async Task AssignTask_StepReachedReturnsControlWithoutWaitingForTimeout()
+    {
+        int port = GetAvailablePort();
+        string pipeName = "ushell-test-" + Guid.NewGuid().ToString("N");
+        await using FakeBridgeServer fakeBridge = new(pipeName, TimeSpan.FromMilliseconds(250), "step_reached");
+        using CancellationTokenSource shutdown = new(TimeSpan.FromSeconds(10));
+        McpHttpServer server = CreateServer(port, pipeName);
+        Task serverTask = server.RunAsync(shutdown.Token);
+        using HttpClient client = new() { BaseAddress = new Uri($"http://127.0.0.1:{port}/mcp/") };
+
+        try
+        {
+            await WaitUntilReadyAsync(client, shutdown.Token);
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            using JsonDocument response = await PostAsync(client, new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method = "tools/call",
+                @params = new
+                {
+                    name = "assign_task",
+                    arguments = new
+                    {
+                        description = "step test",
+                        logKeyword = "test",
+                        completionKeyword = "done",
+                        timeoutMs = 5000
+                    }
+                }
+            }, shutdown.Token);
+            stopwatch.Stop();
+
+            Assert.True(ReadStructuredSuccess(response));
+            Assert.Equal("step_reached", response.RootElement
+                .GetProperty("result")
+                .GetProperty("structuredContent")
+                .GetProperty("data")
+                .GetProperty("status")
+                .GetString());
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            server.Stop();
+            shutdown.Cancel();
+            await serverTask;
+        }
+    }
+
+    [Fact]
+    public async Task ContinueTask_WaitsForTheNextTerminalState()
+    {
+        int port = GetAvailablePort();
+        string pipeName = "ushell-test-" + Guid.NewGuid().ToString("N");
+        await using FakeBridgeServer fakeBridge = new(pipeName, TimeSpan.FromMilliseconds(250));
+        using CancellationTokenSource shutdown = new(TimeSpan.FromSeconds(10));
+        McpHttpServer server = CreateServer(port, pipeName);
+        Task serverTask = server.RunAsync(shutdown.Token);
+        using HttpClient client = new() { BaseAddress = new Uri($"http://127.0.0.1:{port}/mcp/") };
+
+        try
+        {
+            await WaitUntilReadyAsync(client, shutdown.Token);
+            using JsonDocument response = await PostAsync(client, new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method = "tools/call",
+                @params = new
+                {
+                    name = "continue_task",
+                    arguments = new
+                    {
+                        taskId = "task-test",
+                        logKeyword = "phase-two",
+                        completionKeyword = "done",
+                        timeoutMs = 5000
+                    }
+                }
+            }, shutdown.Token);
+
+            Assert.True(ReadStructuredSuccess(response));
+            Assert.Equal("completed", response.RootElement
+                .GetProperty("result")
+                .GetProperty("structuredContent")
+                .GetProperty("data")
+                .GetProperty("status")
+                .GetString());
+        }
+        finally
+        {
+            server.Stop();
+            shutdown.Cancel();
+            await serverTask;
+        }
+    }
+
+    [Fact]
     public async Task ToolsList_WhenBridgeIsUnavailable_ReturnsFallbackCatalog()
     {
         int port = GetAvailablePort();
@@ -242,12 +341,14 @@ public sealed class McpHttpServerTests
         private readonly CancellationTokenSource _shutdown = new();
         private readonly string _pipeName;
         private readonly DateTime _completeAtUtc;
+        private readonly string _terminalStatus;
         private readonly Task _listenTask;
 
-        public FakeBridgeServer(string pipeName, TimeSpan completionDelay)
+        public FakeBridgeServer(string pipeName, TimeSpan completionDelay, string terminalStatus = "completed")
         {
             _pipeName = pipeName;
             _completeAtUtc = DateTime.UtcNow.Add(completionDelay);
+            _terminalStatus = terminalStatus;
             _listenTask = ListenAsync();
         }
 
@@ -298,12 +399,12 @@ public sealed class McpHttpServerTests
             string? method = request.GetProperty("method").GetString();
             if (method == "task/status")
             {
-                string status = DateTime.UtcNow >= _completeAtUtc ? "completed" : "active";
+                string status = DateTime.UtcNow >= _completeAtUtc ? _terminalStatus : "active";
                 return new
                 {
                     taskId = "task-test",
                     status,
-                    reason = status == "completed" ? "manual" : null,
+                    reason = status == "completed" ? "manual" : status == "step_reached" ? "step" : null,
                     capturedLogs = Array.Empty<object>(),
                     buttonInvocations = Array.Empty<object>(),
                     autoTriggerInvocations = Array.Empty<object>()
@@ -318,7 +419,7 @@ public sealed class McpHttpServerTests
             if (method == "tools/call")
             {
                 string? toolName = request.GetProperty("params").GetProperty("name").GetString();
-                object data = toolName == "assign_task"
+                object data = toolName == "assign_task" || toolName == "continue_task"
                     ? new { accepted = true, taskId = "task-test", status = "active", timeoutMs = 10000 }
                     : new { bridgeState = new { state = "connected" } };
                 return new { success = true, data, logs = Array.Empty<object>(), warnings = Array.Empty<object>(), error = (object?)null };

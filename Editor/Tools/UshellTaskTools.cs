@@ -13,7 +13,7 @@ namespace Ushell.Editor
             return new UshellToolDefinition
             {
                 Name = "assign_task",
-                Description = "Creates a human-facing Unity task, waits until it completes, and returns captured matching logs and button invocation records.",
+                Description = "Creates a human-facing Unity task, waits until it completes or reaches a step, and returns captured matching logs and invocation records.",
                 InputSchema = SchemaForObject(new Dictionary<string, object>
                 {
                     { "description", RequiredString() },
@@ -40,6 +40,33 @@ namespace Ushell.Editor
                             { "confirm", OptionalBoolean() }
                         }, "keyword", "expression")
                     },
+                    { "autoTriggers", OptionalArray(new Dictionary<string, object>
+                        {
+                            { "type", "object" },
+                            { "properties", new Dictionary<string, object>
+                                {
+                                    { "keyword", RequiredString() },
+                                    { "description", OptionalString() },
+                                    { "expression", RequiredString() },
+                                    { "confirm", OptionalBoolean() }
+                                }
+                            },
+                            { "required", new[] { "keyword", "expression" } }
+                        })
+                    },
+                    { "steps", OptionalArray(new Dictionary<string, object>
+                        {
+                            { "type", "object" },
+                            { "properties", new Dictionary<string, object>
+                                {
+                                    { "stepId", OptionalString() },
+                                    { "keyword", RequiredString() },
+                                    { "description", OptionalString() }
+                                }
+                            },
+                            { "required", new[] { "keyword" } }
+                        })
+                    },
                     { "timeoutMs", OptionalNumber() }
                 }, "description", "logKeyword", "completionKeyword"),
                 Handler = arguments =>
@@ -51,9 +78,10 @@ namespace Ushell.Editor
                         string completionKeyword = UshellArgumentReader.RequireString(arguments, "completionKeyword");
                         int timeoutMs = UshellArgumentReader.GetInt(arguments, "timeoutMs") ?? DefaultAssignTaskTimeoutMs;
                         List<UshellTaskButton> buttons = ReadButtons(arguments);
-                        UshellTaskAutoTrigger autoTrigger = ReadAutoTrigger(arguments);
+                        List<UshellTaskAutoTrigger> autoTriggers = ReadAutoTriggers(arguments);
+                        List<UshellTaskStep> steps = ReadSteps(arguments);
 
-                        string taskId = UshellTaskStore.CreateTask(description, logKeyword, completionKeyword, buttons, autoTrigger);
+                        string taskId = UshellTaskStore.CreateTask(description, logKeyword, completionKeyword, buttons, autoTriggers, steps);
                         return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                         {
                             { "accepted", true },
@@ -65,6 +93,98 @@ namespace Ushell.Editor
                     catch (Exception exception)
                     {
                         return UshellToolEnvelope.FromError("INVALID_ARGUMENT", exception.Message);
+                    }
+                }
+            };
+        }
+
+        public static UshellToolDefinition CreateContinueTaskTool()
+        {
+            return new UshellToolDefinition
+            {
+                Name = "continue_task",
+                Description = "Reconfigures a step-reached task and waits for its next step or completion.",
+                InputSchema = SchemaForObject(new Dictionary<string, object>
+                {
+                    { "taskId", RequiredString() },
+                    { "description", OptionalString() },
+                    { "logKeyword", RequiredString() },
+                    { "completionKeyword", RequiredString() },
+                    { "buttons", OptionalArray(new Dictionary<string, object>
+                        {
+                            { "type", "object" },
+                            { "properties", new Dictionary<string, object>
+                                {
+                                    { "label", RequiredString() },
+                                    { "description", OptionalString() },
+                                    { "expression", RequiredString() }
+                                }
+                            },
+                            { "required", new[] { "label", "expression" } }
+                        })
+                    },
+                    { "autoTrigger", OptionalObject(new Dictionary<string, object>
+                        {
+                            { "keyword", RequiredString() },
+                            { "description", OptionalString() },
+                            { "expression", RequiredString() },
+                            { "confirm", OptionalBoolean() }
+                        }, "keyword", "expression")
+                    },
+                    { "autoTriggers", OptionalArray(new Dictionary<string, object>
+                        {
+                            { "type", "object" },
+                            { "properties", new Dictionary<string, object>
+                                {
+                                    { "keyword", RequiredString() },
+                                    { "description", OptionalString() },
+                                    { "expression", RequiredString() },
+                                    { "confirm", OptionalBoolean() }
+                                }
+                            },
+                            { "required", new[] { "keyword", "expression" } }
+                        })
+                    },
+                    { "steps", OptionalArray(new Dictionary<string, object>
+                        {
+                            { "type", "object" },
+                            { "properties", new Dictionary<string, object>
+                                {
+                                    { "stepId", OptionalString() },
+                                    { "keyword", RequiredString() },
+                                    { "description", OptionalString() }
+                                }
+                            },
+                            { "required", new[] { "keyword" } }
+                        })
+                    },
+                    { "timeoutMs", OptionalNumber() }
+                }, "taskId", "logKeyword", "completionKeyword"),
+                Handler = arguments =>
+                {
+                    try
+                    {
+                        string taskId = UshellArgumentReader.RequireString(arguments, "taskId");
+                        string description = UshellArgumentReader.GetString(arguments, "description");
+                        string logKeyword = UshellArgumentReader.RequireString(arguments, "logKeyword");
+                        string completionKeyword = UshellArgumentReader.RequireString(arguments, "completionKeyword");
+                        int timeoutMs = UshellArgumentReader.GetInt(arguments, "timeoutMs") ?? DefaultAssignTaskTimeoutMs;
+                        List<UshellTaskButton> buttons = ReadButtons(arguments);
+                        List<UshellTaskAutoTrigger> autoTriggers = ReadAutoTriggers(arguments);
+                        List<UshellTaskStep> steps = ReadSteps(arguments);
+
+                        UshellTaskStore.ContinueTask(taskId, description, logKeyword, completionKeyword, buttons, autoTriggers, steps);
+                        return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
+                        {
+                            { "accepted", true },
+                            { "taskId", taskId },
+                            { "status", "active" },
+                            { "timeoutMs", timeoutMs }
+                        });
+                    }
+                    catch (Exception exception)
+                    {
+                        return UshellToolEnvelope.FromError("INVALID_TASK_TRANSITION", exception.Message);
                     }
                 }
             };
@@ -168,27 +288,102 @@ namespace Ushell.Editor
             return buttons;
         }
 
-        private static UshellTaskAutoTrigger ReadAutoTrigger(Dictionary<string, object> arguments)
+        private static List<UshellTaskAutoTrigger> ReadAutoTriggers(Dictionary<string, object> arguments)
         {
             object rawAutoTrigger = UshellArgumentReader.GetValue(arguments, "autoTrigger");
-            if (rawAutoTrigger == null)
+            object rawAutoTriggers = UshellArgumentReader.GetValue(arguments, "autoTriggers");
+            if (rawAutoTrigger != null && rawAutoTriggers != null)
             {
-                return null;
+                throw new InvalidOperationException("Use either 'autoTrigger' or 'autoTriggers', not both.");
             }
 
-            Dictionary<string, object> autoTrigger = rawAutoTrigger as Dictionary<string, object>;
-            if (autoTrigger == null)
+            List<UshellTaskAutoTrigger> result = new List<UshellTaskAutoTrigger>();
+            if (rawAutoTrigger != null)
             {
-                throw new InvalidOperationException("Argument 'autoTrigger' must be an object.");
+                Dictionary<string, object> legacyTrigger = rawAutoTrigger as Dictionary<string, object>;
+                if (legacyTrigger == null)
+                {
+                    throw new InvalidOperationException("Argument 'autoTrigger' must be an object.");
+                }
+
+                result.Add(ReadAutoTrigger(legacyTrigger, "autoTrigger"));
+                return result;
             }
 
-            return new UshellTaskAutoTrigger
+            List<object> triggers = ReadObjectArray(rawAutoTriggers, "autoTriggers");
+            for (int index = 0; index < triggers.Count; index++)
             {
-                Keyword = UshellArgumentReader.RequireString(autoTrigger, "keyword"),
-                Description = UshellArgumentReader.GetString(autoTrigger, "description"),
-                Expression = UshellArgumentReader.RequireString(autoTrigger, "expression"),
-                Confirm = UshellArgumentReader.GetBool(autoTrigger, "confirm") ?? false
-            };
+                Dictionary<string, object> trigger = triggers[index] as Dictionary<string, object>;
+                if (trigger == null)
+                {
+                    throw new InvalidOperationException($"Argument 'autoTriggers[{index}]' must be an object.");
+                }
+
+                result.Add(ReadAutoTrigger(trigger, $"autoTriggers[{index}]"));
+            }
+
+            return result;
+        }
+
+        private static UshellTaskAutoTrigger ReadAutoTrigger(Dictionary<string, object> source, string argumentName)
+        {
+            try
+            {
+                return new UshellTaskAutoTrigger
+                {
+                    Keyword = UshellArgumentReader.RequireString(source, "keyword"),
+                    Description = UshellArgumentReader.GetString(source, "description"),
+                    Expression = UshellArgumentReader.RequireString(source, "expression"),
+                    Confirm = UshellArgumentReader.GetBool(source, "confirm") ?? false
+                };
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException($"Invalid '{argumentName}': {exception.Message}");
+            }
+        }
+
+        private static List<UshellTaskStep> ReadSteps(Dictionary<string, object> arguments)
+        {
+            List<object> steps = ReadObjectArray(UshellArgumentReader.GetValue(arguments, "steps"), "steps");
+            List<UshellTaskStep> result = new List<UshellTaskStep>();
+            for (int index = 0; index < steps.Count; index++)
+            {
+                Dictionary<string, object> step = steps[index] as Dictionary<string, object>;
+                if (step == null)
+                {
+                    throw new InvalidOperationException($"Argument 'steps[{index}]' must be an object.");
+                }
+
+                result.Add(new UshellTaskStep
+                {
+                    Id = UshellArgumentReader.GetString(step, "stepId"),
+                    Keyword = UshellArgumentReader.RequireString(step, "keyword"),
+                    Description = UshellArgumentReader.GetString(step, "description")
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> ReadObjectArray(object value, string argumentName)
+        {
+            if (value == null)
+            {
+                return new List<object>();
+            }
+
+            if (value is List<object> list)
+            {
+                return list;
+            }
+
+            if (value is object[] array)
+            {
+                return array.ToList();
+            }
+
+            throw new InvalidOperationException($"Argument '{argumentName}' must be an array.");
         }
 
         private static Dictionary<string, object> SchemaForObject(Dictionary<string, object> properties, params string[] required)

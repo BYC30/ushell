@@ -37,10 +37,13 @@ namespace Ushell.Editor
         private static readonly List<UshellLogRecord> Records = new List<UshellLogRecord>(Capacity);
         private static readonly object SyncRoot = new object();
         private static long _nextSequence;
+        private static string ReloadStorageKey => "ushell.logs.reload." + UshellPaths.ProjectKey;
 
         static UshellLogStore()
         {
+            RestoreForDomainReload();
             Application.logMessageReceivedThreaded += OnLogReceived;
+            AssemblyReloadEvents.beforeAssemblyReload += PersistForDomainReload;
         }
 
         public static IReadOnlyList<Dictionary<string, object>> GetEntries(string logType, long? sinceSequence, string keyword, Regex regex, int limit)
@@ -126,6 +129,92 @@ namespace Ushell.Editor
         private static bool Matches(string source, Regex regex)
         {
             return !string.IsNullOrEmpty(source) && regex.IsMatch(source);
+        }
+
+        private static void PersistForDomainReload()
+        {
+            lock (SyncRoot)
+            {
+                SessionState.SetString(ReloadStorageKey, MiniJson.Serialize(new Dictionary<string, object>
+                {
+                    { "nextSequence", _nextSequence },
+                    { "records", Records.Select(record => record.ToDictionary()).ToList() }
+                }));
+            }
+        }
+
+        private static void RestoreForDomainReload()
+        {
+            string json = SessionState.GetString(ReloadStorageKey, null);
+            SessionState.EraseString(ReloadStorageKey);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            try
+            {
+                Dictionary<string, object> root = MiniJson.Deserialize(json) as Dictionary<string, object>;
+                if (root == null)
+                {
+                    return;
+                }
+
+                _nextSequence = ReadLong(root, "nextSequence");
+                if (!root.TryGetValue("records", out object recordsValue) || !(recordsValue is List<object> records))
+                {
+                    return;
+                }
+
+                foreach (Dictionary<string, object> data in records.OfType<Dictionary<string, object>>())
+                {
+                    UshellLogRecord record = new UshellLogRecord
+                    {
+                        Sequence = ReadLong(data, "sequence"),
+                        Type = ReadString(data, "type"),
+                        Message = ReadString(data, "message"),
+                        StackTrace = ReadString(data, "stackTrace"),
+                        TimestampUtc = ReadString(data, "timestampUtc")
+                    };
+                    Records.Add(record);
+                    _nextSequence = Math.Max(_nextSequence, record.Sequence);
+                }
+
+                if (Records.Count > Capacity)
+                {
+                    Records.RemoveRange(0, Records.Count - Capacity);
+                }
+            }
+            catch
+            {
+                Records.Clear();
+                _nextSequence = 0;
+            }
+        }
+
+        private static long ReadLong(Dictionary<string, object> source, string key)
+        {
+            if (source == null || !source.TryGetValue(key, out object value) || value == null)
+            {
+                return 0;
+            }
+
+            if (value is long longValue)
+            {
+                return longValue;
+            }
+
+            if (value is int intValue)
+            {
+                return intValue;
+            }
+
+            return long.TryParse(value.ToString(), out long parsed) ? parsed : 0;
+        }
+
+        private static string ReadString(Dictionary<string, object> source, string key)
+        {
+            return source != null && source.TryGetValue(key, out object value) ? value?.ToString() : null;
         }
     }
 }

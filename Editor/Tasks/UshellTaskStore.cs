@@ -22,12 +22,23 @@ namespace Ushell.Editor
 
         static UshellTaskStore()
         {
+            foreach (UshellTaskRecord record in UshellTaskPersistence.Restore())
+            {
+                States.Add(new TaskState { Record = record });
+            }
+
             EditorApplication.update += PollActiveTasks;
-            AssemblyReloadEvents.beforeAssemblyReload += CancelActiveForDomainReload;
-            EditorApplication.quitting += CancelActiveForDomainReload;
+            AssemblyReloadEvents.beforeAssemblyReload += PersistForDomainReload;
+            EditorApplication.quitting += CancelActiveForEditorQuit;
         }
 
-        public static string CreateTask(string description, string logKeyword, string completionKeyword, IReadOnlyList<UshellTaskButton> buttons, UshellTaskAutoTrigger autoTrigger)
+        public static string CreateTask(
+            string description,
+            string logKeyword,
+            string completionKeyword,
+            IReadOnlyList<UshellTaskButton> buttons,
+            IReadOnlyList<UshellTaskAutoTrigger> autoTriggers,
+            IReadOnlyList<UshellTaskStep> steps)
         {
             if (string.IsNullOrWhiteSpace(description))
             {
@@ -58,7 +69,8 @@ namespace Ushell.Editor
                     CreatedAtUtc = DateTime.UtcNow.ToString("O"),
                     LastSeenSequence = GetCurrentLogSequence(),
                     Buttons = NormalizeButtons(buttons),
-                    AutoTrigger = NormalizeAutoTrigger(autoTrigger)
+                    AutoTriggers = NormalizeAutoTriggers(autoTriggers),
+                    Steps = NormalizeSteps(steps)
                 }
             };
 
@@ -72,19 +84,79 @@ namespace Ushell.Editor
             return taskId;
         }
 
+        public static string ContinueTask(
+            string taskId,
+            string description,
+            string logKeyword,
+            string completionKeyword,
+            IReadOnlyList<UshellTaskButton> buttons,
+            IReadOnlyList<UshellTaskAutoTrigger> autoTriggers,
+            IReadOnlyList<UshellTaskStep> steps)
+        {
+            if (string.IsNullOrWhiteSpace(taskId))
+            {
+                throw new InvalidOperationException("Argument 'taskId' is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(logKeyword))
+            {
+                throw new InvalidOperationException("Argument 'logKeyword' is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(completionKeyword))
+            {
+                throw new InvalidOperationException("Argument 'completionKeyword' is required.");
+            }
+
+            long currentLogSequence = GetCurrentLogSequence();
+            lock (SyncRoot)
+            {
+                TaskState state = FindStateLocked(taskId);
+                if (state == null)
+                {
+                    throw new InvalidOperationException($"Unknown task '{taskId}'.");
+                }
+
+                if (state.Record.Status != UshellTaskStatus.StepReached)
+                {
+                    throw new InvalidOperationException("Only a task in step_reached state can be continued.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(description))
+                {
+                    state.Record.Description = description.Trim();
+                }
+
+                state.Record.LogKeyword = logKeyword.Trim();
+                state.Record.CompletionKeyword = completionKeyword.Trim();
+                state.Record.LastSeenSequence = currentLogSequence;
+                state.Record.Buttons = NormalizeButtons(buttons);
+                state.Record.AutoTriggers = NormalizeAutoTriggers(autoTriggers);
+                state.Record.Steps = NormalizeSteps(steps);
+                state.Record.ReachedStep = null;
+                state.Record.Status = UshellTaskStatus.Active;
+                state.Record.Reason = UshellTaskCompletionReason.None;
+                state.Record.EndedAtUtc = null;
+                ScheduleChangedNotificationLocked();
+            }
+
+            UshellTaskWindow.ShowWindow();
+            return taskId;
+        }
+
         public static void MarkCompletedManual(string taskId)
         {
-            Complete(taskId, UshellTaskStatus.Completed, UshellTaskCompletionReason.Manual);
+            CompleteAfterFinalLogPoll(taskId, UshellTaskStatus.Completed, UshellTaskCompletionReason.Manual);
         }
 
         public static void Cancel(string taskId)
         {
-            Complete(taskId, UshellTaskStatus.Cancelled, UshellTaskCompletionReason.Cancel);
+            CompleteAfterFinalLogPoll(taskId, UshellTaskStatus.Cancelled, UshellTaskCompletionReason.Cancel);
         }
 
         public static void MarkTimedOut(string taskId)
         {
-            Complete(taskId, UshellTaskStatus.TimedOut, UshellTaskCompletionReason.Timeout);
+            CompleteAfterFinalLogPoll(taskId, UshellTaskStatus.TimedOut, UshellTaskCompletionReason.Timeout);
         }
 
         public static UshellToolEnvelope InvokeButton(string taskId, string buttonId)
@@ -232,37 +304,45 @@ namespace Ushell.Editor
             }
         }
 
-        private static void PollTaskLogs(string taskId)
+        private static bool PollTaskLogs(string taskId)
         {
             string logKeyword;
             string completionKeyword;
-            string autoTriggerKeyword;
+            List<KeyValuePair<int, UshellTaskAutoTrigger>> armedAutoTriggers;
+            List<UshellTaskStep> armedSteps;
             long lastSeenSequence;
             lock (SyncRoot)
             {
                 TaskState state = FindStateLocked(taskId);
                 if (state == null || state.Record.Status != UshellTaskStatus.Active)
                 {
-                    return;
+                    return false;
                 }
 
                 logKeyword = state.Record.LogKeyword;
                 completionKeyword = state.Record.CompletionKeyword;
-                autoTriggerKeyword = state.Record.AutoTrigger != null && !state.Record.AutoTrigger.HasFired
-                    ? state.Record.AutoTrigger.Keyword
-                    : null;
+                armedAutoTriggers = state.Record.AutoTriggers
+                    .Select((trigger, index) => new KeyValuePair<int, UshellTaskAutoTrigger>(index, trigger))
+                    .Where(pair => pair.Value != null && !pair.Value.HasFired)
+                    .Select(pair => new KeyValuePair<int, UshellTaskAutoTrigger>(pair.Key, CloneAutoTrigger(pair.Value)))
+                    .ToList();
+                armedSteps = state.Record.Steps
+                    .Where(step => step != null && !step.HasReached)
+                    .Select(CloneStep)
+                    .ToList();
                 lastSeenSequence = state.Record.LastSeenSequence;
             }
 
             IReadOnlyList<Dictionary<string, object>> newEntries = UshellLogStore.GetEntries(null, lastSeenSequence, null, null, LogPollLimit);
             if (newEntries.Count == 0)
             {
-                return;
+                return false;
             }
 
             List<Dictionary<string, object>> matchedLogs = new List<Dictionary<string, object>>();
             bool matchedCompletion = false;
-            bool matchedAutoTrigger = false;
+            List<int> matchedAutoTriggerIndexes = new List<int>();
+            UshellTaskStep matchedStep = null;
             long maxSequence = lastSeenSequence;
             foreach (Dictionary<string, object> entry in newEntries)
             {
@@ -281,21 +361,21 @@ namespace Ushell.Editor
                 {
                     matchedCompletion = true;
                 }
-
-                if (ContainsKeyword(entry, autoTriggerKeyword))
-                {
-                    matchedAutoTrigger = true;
-                }
             }
 
-            UshellTaskAutoTrigger autoTriggerToInvoke = null;
-            bool completeAfterAutoTrigger = false;
+            matchedAutoTriggerIndexes.AddRange(armedAutoTriggers
+                .Where(pair => newEntries.Any(entry => ContainsKeyword(entry, pair.Value.Keyword)))
+                .Select(pair => pair.Key));
+            matchedStep = armedSteps.FirstOrDefault(step => newEntries.Any(entry => ContainsKeyword(entry, step.Keyword)));
+
+            List<UshellTaskAutoTrigger> autoTriggersToInvoke = new List<UshellTaskAutoTrigger>();
+            bool completeAfterAutoTriggers = false;
             lock (SyncRoot)
             {
                 TaskState state = FindStateLocked(taskId);
                 if (state == null || state.Record.Status != UshellTaskStatus.Active)
                 {
-                    return;
+                    return false;
                 }
 
                 state.Record.LastSeenSequence = Math.Max(state.Record.LastSeenSequence, maxSequence);
@@ -304,44 +384,84 @@ namespace Ushell.Editor
                     state.Record.CapturedLogs.AddRange(matchedLogs);
                 }
 
-                if (matchedAutoTrigger && state.Record.AutoTrigger != null && !state.Record.AutoTrigger.HasFired)
+                if (matchedCompletion)
                 {
-                    state.Record.AutoTrigger.HasFired = true;
-                    autoTriggerToInvoke = CloneAutoTrigger(state.Record.AutoTrigger);
-                    completeAfterAutoTrigger = matchedCompletion;
-                    ScheduleChangedNotificationLocked();
-                }
-                else if (matchedCompletion)
-                {
-                    CompleteLocked(state, UshellTaskStatus.Completed, UshellTaskCompletionReason.Keyword);
-                }
-                else if (matchedLogs.Count > 0)
-                {
-                    ScheduleChangedNotificationLocked();
-                }
-            }
-
-            if (autoTriggerToInvoke != null)
-            {
-                UshellTaskAutoTriggerInvocation invocation = ExecuteAutoTrigger(autoTriggerToInvoke);
-                lock (SyncRoot)
-                {
-                    TaskState state = FindStateLocked(taskId);
-                    if (state == null)
-                    {
-                        return;
-                    }
-
-                    state.Record.AutoTriggerInvocations.Add(invocation);
-                    if (completeAfterAutoTrigger && state.Record.Status == UshellTaskStatus.Active)
+                    MarkAutoTriggersFiredLocked(state, matchedAutoTriggerIndexes, autoTriggersToInvoke);
+                    if (autoTriggersToInvoke.Count == 0)
                     {
                         CompleteLocked(state, UshellTaskStatus.Completed, UshellTaskCompletionReason.Keyword);
                     }
                     else
                     {
+                        completeAfterAutoTriggers = true;
                         ScheduleChangedNotificationLocked();
                     }
                 }
+                else if (matchedStep != null)
+                {
+                    UshellTaskStep step = state.Record.Steps.FirstOrDefault(item =>
+                        item != null && !item.HasReached && string.Equals(item.Id, matchedStep.Id, StringComparison.Ordinal));
+                    if (step != null)
+                    {
+                        step.HasReached = true;
+                        state.Record.ReachedStep = CloneStep(step);
+                        CompleteLocked(state, UshellTaskStatus.StepReached, UshellTaskCompletionReason.Step);
+                    }
+                }
+                else
+                {
+                    MarkAutoTriggersFiredLocked(state, matchedAutoTriggerIndexes, autoTriggersToInvoke);
+                    if (matchedLogs.Count > 0 || autoTriggersToInvoke.Count > 0)
+                    {
+                        ScheduleChangedNotificationLocked();
+                    }
+                }
+            }
+
+            foreach (UshellTaskAutoTrigger autoTrigger in autoTriggersToInvoke)
+            {
+                UshellTaskAutoTriggerInvocation invocation = ExecuteAutoTrigger(autoTrigger);
+                lock (SyncRoot)
+                {
+                    TaskState state = FindStateLocked(taskId);
+                    if (state == null)
+                    {
+                        return true;
+                    }
+
+                    state.Record.AutoTriggerInvocations.Add(invocation);
+                    ScheduleChangedNotificationLocked();
+                }
+            }
+
+            if (completeAfterAutoTriggers)
+            {
+                Complete(taskId, UshellTaskStatus.Completed, UshellTaskCompletionReason.Keyword);
+            }
+
+            return true;
+        }
+
+        private static void MarkAutoTriggersFiredLocked(
+            TaskState state,
+            IReadOnlyList<int> matchedIndexes,
+            ICollection<UshellTaskAutoTrigger> triggersToInvoke)
+        {
+            foreach (int index in matchedIndexes)
+            {
+                if (index < 0 || index >= state.Record.AutoTriggers.Count)
+                {
+                    continue;
+                }
+
+                UshellTaskAutoTrigger trigger = state.Record.AutoTriggers[index];
+                if (trigger == null || trigger.HasFired)
+                {
+                    continue;
+                }
+
+                trigger.HasFired = true;
+                triggersToInvoke.Add(CloneAutoTrigger(trigger));
             }
         }
 
@@ -359,6 +479,16 @@ namespace Ushell.Editor
             }
         }
 
+        private static void CompleteAfterFinalLogPoll(string taskId, UshellTaskStatus status, UshellTaskCompletionReason reason)
+        {
+            for (int iteration = 0; iteration < 32 && PollTaskLogs(taskId); iteration++)
+            {
+                // Drain logs and any finite auto-trigger chain before committing the terminal state.
+            }
+
+            Complete(taskId, status, reason);
+        }
+
         private static void CompleteLocked(TaskState state, UshellTaskStatus status, UshellTaskCompletionReason reason)
         {
             state.Record.Status = status;
@@ -367,16 +497,24 @@ namespace Ushell.Editor
             ScheduleChangedNotificationLocked();
         }
 
-        public static void CancelActiveForDomainReload()
+        private static void PersistForDomainReload()
+        {
+            List<UshellTaskRecord> records;
+            lock (SyncRoot)
+            {
+                records = States.Select(state => state.Record.Clone()).ToList();
+            }
+
+            UshellTaskPersistence.Save(records);
+        }
+
+        private static void CancelActiveForEditorQuit()
         {
             lock (SyncRoot)
             {
-                foreach (TaskState state in States)
+                foreach (TaskState state in States.Where(item => item.Record.Status == UshellTaskStatus.Active))
                 {
-                    if (state.Record.Status == UshellTaskStatus.Active)
-                    {
-                        CompleteLocked(state, UshellTaskStatus.Cancelled, UshellTaskCompletionReason.DomainReload);
-                    }
+                    CompleteLocked(state, UshellTaskStatus.Cancelled, UshellTaskCompletionReason.Cancel);
                 }
             }
         }
@@ -414,21 +552,66 @@ namespace Ushell.Editor
             return normalized;
         }
 
-        private static UshellTaskAutoTrigger NormalizeAutoTrigger(UshellTaskAutoTrigger autoTrigger)
+        private static List<UshellTaskAutoTrigger> NormalizeAutoTriggers(IReadOnlyList<UshellTaskAutoTrigger> autoTriggers)
         {
-            if (autoTrigger == null || string.IsNullOrWhiteSpace(autoTrigger.Keyword) || string.IsNullOrWhiteSpace(autoTrigger.Expression))
+            List<UshellTaskAutoTrigger> normalized = new List<UshellTaskAutoTrigger>();
+            if (autoTriggers == null)
             {
-                return null;
+                return normalized;
             }
 
-            return new UshellTaskAutoTrigger
+            foreach (UshellTaskAutoTrigger autoTrigger in autoTriggers)
             {
-                Keyword = autoTrigger.Keyword.Trim(),
-                Description = string.IsNullOrWhiteSpace(autoTrigger.Description) ? null : autoTrigger.Description.Trim(),
-                Expression = autoTrigger.Expression.Trim(),
-                Confirm = autoTrigger.Confirm,
-                HasFired = false
-            };
+                if (autoTrigger == null || string.IsNullOrWhiteSpace(autoTrigger.Keyword) || string.IsNullOrWhiteSpace(autoTrigger.Expression))
+                {
+                    continue;
+                }
+
+                normalized.Add(new UshellTaskAutoTrigger
+                {
+                    Keyword = autoTrigger.Keyword.Trim(),
+                    Description = string.IsNullOrWhiteSpace(autoTrigger.Description) ? null : autoTrigger.Description.Trim(),
+                    Expression = autoTrigger.Expression.Trim(),
+                    Confirm = autoTrigger.Confirm,
+                    HasFired = false
+                });
+            }
+
+            return normalized;
+        }
+
+        private static List<UshellTaskStep> NormalizeSteps(IReadOnlyList<UshellTaskStep> steps)
+        {
+            List<UshellTaskStep> normalized = new List<UshellTaskStep>();
+            if (steps == null)
+            {
+                return normalized;
+            }
+
+            for (int index = 0; index < steps.Count; index++)
+            {
+                UshellTaskStep step = steps[index];
+                if (step == null || string.IsNullOrWhiteSpace(step.Keyword))
+                {
+                    continue;
+                }
+
+                string stepId = string.IsNullOrWhiteSpace(step.Id) ? $"step-{index + 1}" : step.Id.Trim();
+                if (normalized.Any(item => string.Equals(item.Id, stepId, StringComparison.Ordinal)))
+                {
+                    throw new InvalidOperationException($"Duplicate task step id '{stepId}'.");
+                }
+
+                normalized.Add(new UshellTaskStep
+                {
+                    Id = stepId,
+                    Keyword = step.Keyword.Trim(),
+                    Description = string.IsNullOrWhiteSpace(step.Description) ? null : step.Description.Trim(),
+                    HasReached = false
+                });
+            }
+
+            return normalized;
         }
 
         private static UshellTaskAutoTriggerInvocation ExecuteAutoTrigger(UshellTaskAutoTrigger autoTrigger)
@@ -479,6 +662,22 @@ namespace Ushell.Editor
                 Expression = source.Expression,
                 Confirm = source.Confirm,
                 HasFired = source.HasFired
+            };
+        }
+
+        private static UshellTaskStep CloneStep(UshellTaskStep source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            return new UshellTaskStep
+            {
+                Id = source.Id,
+                Keyword = source.Keyword,
+                Description = source.Description,
+                HasReached = source.HasReached
             };
         }
 

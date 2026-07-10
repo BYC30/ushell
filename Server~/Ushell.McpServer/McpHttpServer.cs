@@ -234,9 +234,10 @@ internal sealed class McpHttpServer
             return await HandleRefreshAssetsAsync(id, arguments, cancellationToken).ConfigureAwait(false);
         }
 
-        if (string.Equals(toolName, "assign_task", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(toolName, "assign_task", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(toolName, "continue_task", StringComparison.OrdinalIgnoreCase))
         {
-            return await HandleAssignTaskAsync(id, arguments, cancellationToken).ConfigureAwait(false);
+            return await HandleBlockingTaskAsync(id, toolName, arguments, cancellationToken).ConfigureAwait(false);
         }
 
         BridgeResponse bridgeResponse = await CallToolBridgeAsync(toolName, arguments, cancellationToken).ConfigureAwait(false);
@@ -288,33 +289,37 @@ internal sealed class McpHttpServer
         return BuildResultResponse(id, ToMcpToolResult("refresh_assets", BridgeResponse.FromSuccess(envelope)));
     }
 
-    private async Task<Dictionary<string, object?>> HandleAssignTaskAsync(object? id, Dictionary<string, object?> arguments, CancellationToken cancellationToken)
+    private async Task<Dictionary<string, object?>> HandleBlockingTaskAsync(
+        object? id,
+        string toolName,
+        Dictionary<string, object?> arguments,
+        CancellationToken cancellationToken)
     {
         int timeoutMs = Math.Max(1, ReadInt(arguments, "timeoutMs") ?? 1800000);
-        BridgeResponse startResponse = await CallToolBridgeAsync("assign_task", arguments, cancellationToken).ConfigureAwait(false);
+        BridgeResponse startResponse = await CallToolBridgeAsync(toolName, arguments, cancellationToken).ConfigureAwait(false);
         if (!startResponse.Success)
         {
-            return BuildResultResponse(id, ToMcpToolResult("assign_task", startResponse));
+            return BuildResultResponse(id, ToMcpToolResult(toolName, startResponse));
         }
 
         Dictionary<string, object?> envelope = JsonUtil.AsObject(startResponse.Result);
         if (JsonUtil.Get(envelope, "success") is not bool startSucceeded || !startSucceeded)
         {
-            return BuildResultResponse(id, ToMcpToolResult("assign_task", startResponse));
+            return BuildResultResponse(id, ToMcpToolResult(toolName, startResponse));
         }
 
         Dictionary<string, object?> data = JsonUtil.AsObject(JsonUtil.Get(envelope, "data"));
         string? taskId = JsonUtil.Get(data, "taskId")?.ToString();
         if (string.IsNullOrWhiteSpace(taskId))
         {
-            return BuildResultResponse(id, ToMcpToolResult("assign_task", BridgeResponse.FromError(
+            return BuildResultResponse(id, ToMcpToolResult(toolName, BridgeResponse.FromError(
                 "TASK_START_FAILED",
-                "Unity accepted assign_task without returning a task id.",
+                $"Unity accepted {toolName} without returning a task id.",
                 envelope)));
         }
 
         BridgeResponse waitResponse = await WaitForTaskAsync(taskId, timeoutMs, cancellationToken).ConfigureAwait(false);
-        return BuildResultResponse(id, ToMcpToolResult("assign_task", waitResponse));
+        return BuildResultResponse(id, ToMcpToolResult(toolName, waitResponse));
     }
 
     private async Task<BridgeResponse> WaitForRefreshAsync(string requestId, int timeoutMs, CancellationToken cancellationToken)
@@ -439,6 +444,7 @@ internal sealed class McpHttpServer
     private static bool IsTerminalTaskState(string? state)
     {
         return string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(state, "step_reached", StringComparison.OrdinalIgnoreCase)
             || string.Equals(state, "cancelled", StringComparison.OrdinalIgnoreCase)
             || string.Equals(state, "timed_out", StringComparison.OrdinalIgnoreCase);
     }

@@ -72,11 +72,16 @@ namespace Ushell.Editor
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             GUILayout.Label(task.Description, WrappedBoldLabel());
             GUILayout.Label($"log: {task.LogKeyword}    done: {task.CompletionKeyword}", EditorStyles.miniLabel);
-            if (task.AutoTrigger != null)
+            foreach (UshellTaskAutoTrigger trigger in task.AutoTriggers)
             {
-                string state = task.AutoTrigger.HasFired ? "fired" : "armed";
-                string confirm = task.AutoTrigger.Confirm ? "confirmed" : "unconfirmed";
-                GUILayout.Label($"auto: {task.AutoTrigger.Keyword} ({state}, {confirm})", EditorStyles.miniLabel);
+                string state = trigger.HasFired ? "fired" : "armed";
+                string confirm = trigger.Confirm ? "confirmed" : "unconfirmed";
+                GUILayout.Label($"auto: {trigger.Keyword} ({state}, {confirm})", EditorStyles.miniLabel);
+            }
+
+            foreach (UshellTaskStep step in task.Steps.Where(item => !item.HasReached))
+            {
+                GUILayout.Label($"step: {step.Id} waits for {step.Keyword}", EditorStyles.miniLabel);
             }
 
             if (task.Buttons.Count > 0)
@@ -142,6 +147,9 @@ namespace Ushell.Editor
             Color previous = GUI.backgroundColor;
             switch (task.Status)
             {
+                case UshellTaskStatus.StepReached:
+                    GUI.backgroundColor = new Color(0.35f, 0.65f, 0.9f);
+                    break;
                 case UshellTaskStatus.Completed:
                     GUI.backgroundColor = new Color(0.35f, 0.75f, 0.45f);
                     break;

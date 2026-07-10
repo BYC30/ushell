@@ -68,7 +68,8 @@ The implementation currently supports:
 - `build_project`
 - `get_build_status`
 - `refresh_assets` with optional `forceSynchronousImport` and `timeoutMs`
-- `assign_task` with optional buttons, automatic triggers, and an external-process-owned timeout
+- `assign_task` with optional buttons, multiple automatic triggers, step handoffs, and an external-process-owned timeout
+- `continue_task` to replace the controls of a `step_reached` task and wait for its next terminal state
 - `list_tasks`
 - `get_task`
 
@@ -79,6 +80,16 @@ All tool calls return a unified payload with:
 - `logs`
 - `warnings`
 - `error`
+
+### Task Semantics
+
+- `assign_task` keeps the MCP request open while Unity remains interactive.
+- Only logs matching `logKeyword` are retained in the task record.
+- `autoTrigger` remains supported for one script; `autoTriggers` arms multiple one-shot keyword/script pairs.
+- A configured `step` returns the task with `status=step_reached` when its keyword is observed, handing control back to the caller.
+- `continue_task` reuses that task id, preserves prior captured logs and invocations, and replaces the next phase's filters, scripts, buttons, and steps.
+- Completion by keyword, manual action, cancel, and timeout performs a final matching-log drain before committing the terminal state.
+- Active task state, captured logs, invocation records, and the log sequence window survive Unity domain reload within the current Editor session.
 
 ## Notes
 

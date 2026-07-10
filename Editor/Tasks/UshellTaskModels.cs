@@ -7,6 +7,7 @@ namespace Ushell.Editor
     public enum UshellTaskStatus
     {
         Active,
+        StepReached,
         Completed,
         Cancelled,
         TimedOut
@@ -17,6 +18,7 @@ namespace Ushell.Editor
         None,
         Keyword,
         Manual,
+        Step,
         Cancel,
         Timeout,
         DomainReload
@@ -60,6 +62,26 @@ namespace Ushell.Editor
                 { "expression", Expression },
                 { "confirm", Confirm },
                 { "hasFired", HasFired }
+            };
+        }
+    }
+
+    [Serializable]
+    public sealed class UshellTaskStep
+    {
+        public string Id { get; internal set; }
+        public string Keyword { get; internal set; }
+        public string Description { get; internal set; }
+        public bool HasReached { get; internal set; }
+
+        public Dictionary<string, object> ToDictionary()
+        {
+            return new Dictionary<string, object>
+            {
+                { "stepId", Id },
+                { "keyword", Keyword },
+                { "description", Description },
+                { "hasReached", HasReached }
             };
         }
     }
@@ -153,10 +175,14 @@ namespace Ushell.Editor
         public string EndedAtUtc { get; internal set; }
         public long LastSeenSequence { get; internal set; }
         public List<UshellTaskButton> Buttons { get; internal set; } = new List<UshellTaskButton>();
-        public UshellTaskAutoTrigger AutoTrigger { get; internal set; }
+        public List<UshellTaskAutoTrigger> AutoTriggers { get; internal set; } = new List<UshellTaskAutoTrigger>();
+        public List<UshellTaskStep> Steps { get; internal set; } = new List<UshellTaskStep>();
+        public UshellTaskStep ReachedStep { get; internal set; }
         public List<Dictionary<string, object>> CapturedLogs { get; internal set; } = new List<Dictionary<string, object>>();
         public List<UshellTaskButtonInvocation> ButtonInvocations { get; internal set; } = new List<UshellTaskButtonInvocation>();
         public List<UshellTaskAutoTriggerInvocation> AutoTriggerInvocations { get; internal set; } = new List<UshellTaskAutoTriggerInvocation>();
+
+        public UshellTaskAutoTrigger AutoTrigger => AutoTriggers.FirstOrDefault();
 
         internal UshellTaskRecord Clone()
         {
@@ -172,7 +198,9 @@ namespace Ushell.Editor
                 EndedAtUtc = EndedAtUtc,
                 LastSeenSequence = LastSeenSequence,
                 Buttons = Buttons.Select(CloneButton).ToList(),
-                AutoTrigger = CloneAutoTrigger(AutoTrigger),
+                AutoTriggers = AutoTriggers.Select(CloneAutoTrigger).ToList(),
+                Steps = Steps.Select(CloneStep).ToList(),
+                ReachedStep = CloneStep(ReachedStep),
                 CapturedLogs = CapturedLogs.Select(CloneDictionary).ToList(),
                 ButtonInvocations = ButtonInvocations.Select(CloneInvocation).ToList(),
                 AutoTriggerInvocations = AutoTriggerInvocations.Select(CloneAutoTriggerInvocation).ToList()
@@ -191,6 +219,9 @@ namespace Ushell.Editor
                 { "completionKeyword", CompletionKeyword },
                 { "buttons", Buttons.Select(button => button.ToDictionary()).ToList() },
                 { "autoTrigger", AutoTrigger == null ? null : AutoTrigger.ToDictionary() },
+                { "autoTriggers", AutoTriggers.Select(trigger => trigger.ToDictionary()).ToList() },
+                { "steps", Steps.Select(step => step.ToDictionary()).ToList() },
+                { "reachedStep", ReachedStep == null ? null : ReachedStep.ToDictionary() },
                 { "capturedLogs", CapturedLogs.Select(CloneDictionary).ToList() },
                 { "buttonInvocations", ButtonInvocations.Select(invocation => invocation.ToDictionary()).ToList() },
                 { "autoTriggerInvocations", AutoTriggerInvocations.Select(invocation => invocation.ToDictionary()).ToList() },
@@ -210,7 +241,8 @@ namespace Ushell.Editor
                 { "createdAtUtc", CreatedAtUtc },
                 { "endedAtUtc", EndedAtUtc },
                 { "capturedLogCount", CapturedLogs.Count },
-                { "autoTriggerInvocationCount", AutoTriggerInvocations.Count }
+                { "autoTriggerInvocationCount", AutoTriggerInvocations.Count },
+                { "reachedStep", ReachedStep == null ? null : ReachedStep.ToDictionary() }
             };
         }
 
@@ -218,6 +250,8 @@ namespace Ushell.Editor
         {
             switch (status)
             {
+                case UshellTaskStatus.StepReached:
+                    return "step_reached";
                 case UshellTaskStatus.Completed:
                     return "completed";
                 case UshellTaskStatus.Cancelled:
@@ -237,6 +271,8 @@ namespace Ushell.Editor
                     return "keyword";
                 case UshellTaskCompletionReason.Manual:
                     return "manual";
+                case UshellTaskCompletionReason.Step:
+                    return "step";
                 case UshellTaskCompletionReason.Cancel:
                     return "cancel";
                 case UshellTaskCompletionReason.Timeout:
@@ -289,6 +325,22 @@ namespace Ushell.Editor
                 Expression = source.Expression,
                 Confirm = source.Confirm,
                 HasFired = source.HasFired
+            };
+        }
+
+        private static UshellTaskStep CloneStep(UshellTaskStep source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            return new UshellTaskStep
+            {
+                Id = source.Id,
+                Keyword = source.Keyword,
+                Description = source.Description,
+                HasReached = source.HasReached
             };
         }
 
