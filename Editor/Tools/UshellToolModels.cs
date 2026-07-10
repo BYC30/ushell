@@ -70,6 +70,7 @@ namespace Ushell.Editor
         public Dictionary<string, object> InputSchema;
         public Func<Dictionary<string, object>, UshellToolEnvelope> Handler;
         public Func<Dictionary<string, object>, Task<UshellToolEnvelope>> AsyncHandler;
+        public Action<Dictionary<string, object>> AfterResponseHandler;
 
         public Dictionary<string, object> ToMcpDictionary()
         {

@@ -44,6 +44,20 @@ namespace Ushell.Editor
             return completionSource.Task;
         }
 
+        public static void Post(Action action)
+        {
+            if (action == null)
+            {
+                throw new ArgumentNullException(nameof(action));
+            }
+
+            lock (SyncRoot)
+            {
+                PendingActions.Enqueue(action);
+                ScheduleDrainLocked();
+            }
+        }
+
         public static Task<T> InvokeAsync<T>(Func<Task<T>> func)
         {
             TaskCompletionSource<T> completionSource = new TaskCompletionSource<T>();

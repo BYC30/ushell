@@ -82,7 +82,7 @@ namespace Ushell.Editor
             bool matchesAllowedPath = allowedPaths
                 .Where(path => !string.IsNullOrWhiteSpace(path))
                 .Select(NormalizeConfiguredPath)
-                .Any(allowed => outputPath.StartsWith(allowed, StringComparison.OrdinalIgnoreCase) || outputDirectory.StartsWith(allowed, StringComparison.OrdinalIgnoreCase));
+                .Any(allowed => IsPathWithin(allowed, outputPath));
 
             if (!matchesAllowedPath)
             {
@@ -105,6 +105,22 @@ namespace Ushell.Editor
         {
             string fullPath = Path.IsPathRooted(path) ? path : Path.Combine(ProjectPath, path);
             return Path.GetFullPath(fullPath);
+        }
+
+        private static bool IsPathWithin(string allowedPath, string candidatePath)
+        {
+            string allowed = Path.GetFullPath(allowedPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string candidate = Path.GetFullPath(candidatePath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            if (string.Equals(allowed, candidate, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string allowedPrefix = allowed + Path.DirectorySeparatorChar;
+            return candidate.StartsWith(allowedPrefix, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string StableHash(string value)

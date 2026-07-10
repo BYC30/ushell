@@ -8,6 +8,7 @@ internal sealed class McpHttpServer
     private const string ProtocolVersion = "2025-11-05";
     private const int HealthBridgeTimeoutMs = 2000;
     private const int RefreshStatusBridgeTimeoutMs = 2000;
+    private const int TaskStatusBridgeTimeoutMs = 2000;
     private const int ToolListBridgeTimeoutMs = 2000;
     private readonly BridgeClient _bridgeClient;
     private readonly ServerOptions _options;
@@ -233,6 +234,11 @@ internal sealed class McpHttpServer
             return await HandleRefreshAssetsAsync(id, arguments, cancellationToken).ConfigureAwait(false);
         }
 
+        if (string.Equals(toolName, "assign_task", StringComparison.OrdinalIgnoreCase))
+        {
+            return await HandleAssignTaskAsync(id, arguments, cancellationToken).ConfigureAwait(false);
+        }
+
         BridgeResponse bridgeResponse = await CallToolBridgeAsync(toolName, arguments, cancellationToken).ConfigureAwait(false);
         return BuildResultResponse(id, ToMcpToolResult(toolName, bridgeResponse));
     }
@@ -282,6 +288,35 @@ internal sealed class McpHttpServer
         return BuildResultResponse(id, ToMcpToolResult("refresh_assets", BridgeResponse.FromSuccess(envelope)));
     }
 
+    private async Task<Dictionary<string, object?>> HandleAssignTaskAsync(object? id, Dictionary<string, object?> arguments, CancellationToken cancellationToken)
+    {
+        int timeoutMs = Math.Max(1, ReadInt(arguments, "timeoutMs") ?? 1800000);
+        BridgeResponse startResponse = await CallToolBridgeAsync("assign_task", arguments, cancellationToken).ConfigureAwait(false);
+        if (!startResponse.Success)
+        {
+            return BuildResultResponse(id, ToMcpToolResult("assign_task", startResponse));
+        }
+
+        Dictionary<string, object?> envelope = JsonUtil.AsObject(startResponse.Result);
+        if (JsonUtil.Get(envelope, "success") is not bool startSucceeded || !startSucceeded)
+        {
+            return BuildResultResponse(id, ToMcpToolResult("assign_task", startResponse));
+        }
+
+        Dictionary<string, object?> data = JsonUtil.AsObject(JsonUtil.Get(envelope, "data"));
+        string? taskId = JsonUtil.Get(data, "taskId")?.ToString();
+        if (string.IsNullOrWhiteSpace(taskId))
+        {
+            return BuildResultResponse(id, ToMcpToolResult("assign_task", BridgeResponse.FromError(
+                "TASK_START_FAILED",
+                "Unity accepted assign_task without returning a task id.",
+                envelope)));
+        }
+
+        BridgeResponse waitResponse = await WaitForTaskAsync(taskId, timeoutMs, cancellationToken).ConfigureAwait(false);
+        return BuildResultResponse(id, ToMcpToolResult("assign_task", waitResponse));
+    }
+
     private async Task<BridgeResponse> WaitForRefreshAsync(string requestId, int timeoutMs, CancellationToken cancellationToken)
     {
         DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1000, timeoutMs));
@@ -325,6 +360,87 @@ internal sealed class McpHttpServer
                 ["message"] = lastUnavailable.ErrorMessage
             }
         });
+    }
+
+    private async Task<BridgeResponse> WaitForTaskAsync(string taskId, int timeoutMs, CancellationToken cancellationToken)
+    {
+        DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        BridgeResponse? lastUnavailable = null;
+        bool bridgeWasUnavailable = false;
+        while (DateTime.UtcNow < deadlineUtc && !cancellationToken.IsCancellationRequested)
+        {
+            BridgeResponse statusResponse = await _bridgeClient.SendAsync(
+                "task/status",
+                new Dictionary<string, object?> { ["taskId"] = taskId },
+                CreateShortBridgeTimeout(TaskStatusBridgeTimeoutMs),
+                cancellationToken).ConfigureAwait(false);
+
+            if (!statusResponse.Success)
+            {
+                bridgeWasUnavailable = true;
+                lastUnavailable = statusResponse;
+            }
+            else
+            {
+                Dictionary<string, object?> status = JsonUtil.AsObject(statusResponse.Result);
+                string state = JsonUtil.Get(status, "status")?.ToString() ?? string.Empty;
+                if (IsTerminalTaskState(state))
+                {
+                    return BridgeResponse.FromSuccess(SuccessEnvelope(status));
+                }
+
+                if (string.Equals(state, "not_found", StringComparison.OrdinalIgnoreCase))
+                {
+                    string code = bridgeWasUnavailable ? "TASK_INTERRUPTED" : "TASK_NOT_FOUND";
+                    string message = bridgeWasUnavailable
+                        ? $"Unity reloaded before task '{taskId}' reached a terminal state."
+                        : $"Unity no longer has task '{taskId}'.";
+                    return BridgeResponse.FromError(code, message, status);
+                }
+            }
+
+            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+        }
+
+        BridgeResponse timeoutResponse = await _bridgeClient.SendAsync(
+            "task/timeout",
+            new Dictionary<string, object?> { ["taskId"] = taskId },
+            CreateShortBridgeTimeout(TaskStatusBridgeTimeoutMs),
+            cancellationToken).ConfigureAwait(false);
+        if (timeoutResponse.Success)
+        {
+            Dictionary<string, object?> status = JsonUtil.AsObject(timeoutResponse.Result);
+            string state = JsonUtil.Get(status, "status")?.ToString() ?? string.Empty;
+            if (IsTerminalTaskState(state))
+            {
+                return BridgeResponse.FromSuccess(SuccessEnvelope(status));
+            }
+
+            if (bridgeWasUnavailable && string.Equals(state, "not_found", StringComparison.OrdinalIgnoreCase))
+            {
+                return BridgeResponse.FromError(
+                    "TASK_INTERRUPTED",
+                    $"Unity reloaded before task '{taskId}' reached a terminal state.",
+                    status);
+            }
+        }
+
+        return BridgeResponse.FromError("TASK_TIMEOUT", $"Task '{taskId}' did not complete within {timeoutMs} ms.", new Dictionary<string, object?>
+        {
+            ["taskId"] = taskId,
+            ["lastBridgeError"] = lastUnavailable == null ? null : new Dictionary<string, object?>
+            {
+                ["code"] = lastUnavailable.ErrorCode,
+                ["message"] = lastUnavailable.ErrorMessage
+            }
+        });
+    }
+
+    private static bool IsTerminalTaskState(string? state)
+    {
+        return string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(state, "cancelled", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(state, "timed_out", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<BridgeResponse> CallToolBridgeAsync(string toolName, Dictionary<string, object?> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null)
@@ -503,7 +619,18 @@ internal sealed class McpHttpServer
             return true;
         }
 
-        return origin.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || origin.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase);
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out Uri? uri) ||
+            (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return IPAddress.TryParse(uri.Host, out IPAddress? address) && IPAddress.IsLoopback(address);
     }
 }

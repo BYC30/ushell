@@ -16,6 +16,7 @@
 /.vscode/
 *.csproj
 !Server~/Ushell.McpServer/Ushell.McpServer.csproj
+!Server~/Ushell.McpServer.Tests/Ushell.McpServer.Tests.csproj
 *.unityproj
 *.sln
 *.suo
@@ -35,6 +36,8 @@
 /Server/publish/
 /Server~/Ushell.McpServer/bin/
 /Server~/Ushell.McpServer/obj/
+/Server~/Ushell.McpServer.Tests/bin/
+/Server~/Ushell.McpServer.Tests/obj/
 
 # OS files
 .DS_Store

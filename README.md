@@ -29,7 +29,7 @@ com.ushell/
 ## Installation
 
 1. Add this repository as a local or git UPM package.
-2. Open Unity `2022.3 LTS` or newer on Windows.
+2. Open Unity `2019.4 LTS` or newer on Windows.
 3. Open `Project Settings > Ushell`.
 4. Confirm the HTTP port and allowed output paths.
 5. Run `publish.ps1` once to build `Server/publish/Ushell.McpServer.exe` for the package.
@@ -68,6 +68,9 @@ The implementation currently supports:
 - `build_project`
 - `get_build_status`
 - `refresh_assets` with optional `forceSynchronousImport` and `timeoutMs`
+- `assign_task` with optional buttons, automatic triggers, and an external-process-owned timeout
+- `list_tasks`
+- `get_task`
 
 All tool calls return a unified payload with:
 
@@ -83,6 +86,7 @@ All tool calls return a unified payload with:
 - The HTTP listener binds to localhost and is intended for local development workflows.
 - The MCP HTTP listener runs outside Unity; Unity-side APIs are only accessed through the Editor Bridge.
 - During script compilation/domain reload the Bridge may disconnect, but the MCP process keeps the HTTP endpoint alive.
+- Long-running refresh and task requests are owned by the external MCP process and use short Bridge status polls instead of holding a pipe connection open.
 - `exec_expr` now uses a bundled Mono evaluator session for shell-style execution and completions inside the Editor.
 - Runtime invocation is intentionally constrained to registered actions rather than arbitrary runtime code execution.
 - Tool execution is marshalled back onto the Unity main thread before it touches Editor APIs.

@@ -11,13 +11,33 @@ namespace Ushell.Editor
         {
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorApplication.quitting += OnQuitting;
             RequestStart();
         }
 
         private static void OnBeforeAssemblyReload()
         {
-            UshellEditorBridgeServer.Stop();
+            StopBridgeForDomainTransition("beforeAssemblyReload");
+        }
+
+        private static void OnPlayModeStateChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.ExitingEditMode || state == PlayModeStateChange.ExitingPlayMode)
+            {
+                StopBridgeForDomainTransition("playModeStateChanged:" + state);
+                return;
+            }
+
+            if (state == PlayModeStateChange.EnteredEditMode || state == PlayModeStateChange.EnteredPlayMode)
+            {
+                RequestStart();
+            }
+        }
+
+        private static void StopBridgeForDomainTransition(string reason)
+        {
+            UshellEditorBridgeServer.Stop(reason);
         }
 
         private static void OnAfterAssemblyReload()
@@ -27,7 +47,7 @@ namespace Ushell.Editor
 
         private static void OnQuitting()
         {
-            UshellEditorBridgeServer.Stop();
+            UshellEditorBridgeServer.Stop("editorQuitting");
             UshellMcpProcessSupervisor.Stop();
         }
 

@@ -49,6 +49,9 @@ namespace Ushell.Editor
             Register(UshellEditorTools.CreateGetBuildStatusTool());
             Register(UshellEditorTools.CreateRefreshAssetsTool());
             Register(UshellEditorTools.CreateRuntimeInvokeTool());
+            Register(UshellTaskTools.CreateAssignTaskTool());
+            Register(UshellTaskTools.CreateListTasksTool());
+            Register(UshellTaskTools.CreateGetTaskTool());
         }
 
         private static void Register(UshellToolDefinition definition)
@@ -69,6 +72,7 @@ namespace Ushell.Editor
                 Handler = _ => UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                 {
                     { "unityVersion", Application.unityVersion },
+                    { "minimumSupportedUnityVersion", "2019.4" },
                     { "projectPath", UshellPaths.ProjectPath },
                     { "isPlaying", EditorApplication.isPlaying },
                     { "isCompiling", EditorApplication.isCompiling },
@@ -160,16 +164,14 @@ namespace Ushell.Editor
                         return UshellToolEnvelope.FromError("PLAYMODE_UNAVAILABLE", "Cannot enter PlayMode while the Editor is compiling.");
                     }
 
-                    if (!EditorApplication.isPlaying)
-                    {
-                        EditorApplication.isPlaying = true;
-                    }
-
                     return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
+                        { "accepted", true },
+                        { "targetIsPlaying", true },
                         { "isPlaying", EditorApplication.isPlaying }
                     });
-                }
+                },
+                AfterResponseHandler = _ => EditorApplication.isPlaying = true
             };
         }
 
@@ -182,16 +184,14 @@ namespace Ushell.Editor
                 InputSchema = SchemaForObject(new Dictionary<string, object>()),
                 Handler = _ =>
                 {
-                    if (EditorApplication.isPlaying)
-                    {
-                        EditorApplication.isPlaying = false;
-                    }
-
                     return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
+                        { "accepted", true },
+                        { "targetIsPlaying", false },
                         { "isPlaying", EditorApplication.isPlaying }
                     });
-                }
+                },
+                AfterResponseHandler = _ => EditorApplication.isPlaying = false
             };
         }
 
@@ -342,6 +342,14 @@ namespace Ushell.Editor
                 {
                     bool forceSynchronousImport = UshellArgumentReader.GetBool(arguments, "forceSynchronousImport") ?? false;
                     int timeoutMs = UshellArgumentReader.GetInt(arguments, "timeoutMs") ?? 120000;
+                    if (UshellRefreshTracker.TryGetActiveStatus(out Dictionary<string, object> activeRefreshStatus))
+                    {
+                        return UshellToolEnvelope.FromError(
+                            "REFRESH_IN_PROGRESS",
+                            "A refresh request is already active for this Unity project.",
+                            activeRefreshStatus);
+                    }
+
                     if (EditorApplication.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
                     {
                         UshellRefreshPreparationResult preparation = await UshellEditorUtility.PrepareRefreshWhilePlayingAsync();
@@ -359,7 +367,14 @@ namespace Ushell.Editor
                         ? ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport
                         : ImportAssetOptions.ForceUpdate;
 
-                    Dictionary<string, object> refreshStatus = UshellRefreshTracker.ScheduleRefresh(options);
+                    if (!UshellRefreshTracker.TryScheduleRefresh(options, out Dictionary<string, object> refreshStatus))
+                    {
+                        return UshellToolEnvelope.FromError(
+                            "REFRESH_IN_PROGRESS",
+                            "A refresh request is already active for this Unity project.",
+                            refreshStatus);
+                    }
+
                     return UshellToolEnvelope.FromSuccess(new Dictionary<string, object>
                     {
                         { "accepted", true },

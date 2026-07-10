@@ -1,5 +1,5 @@
 param(
-    [string]$Destination = "F:\autobuild\AndroidSimpleProject_mlbb_2.1.96.1214.1_Demo\Packages\com.ushell",
+    [string]$Destination = "F:\autobuild\UShell-Test2\Packages\com.ushell",
     [switch]$SkipMcpServerBuild
 )
 
@@ -44,27 +44,6 @@ function ShouldSkipPath {
     return $false
 }
 
-function Test-FilesEqual {
-    param(
-        [string]$SourcePath,
-        [string]$DestinationPath
-    )
-
-    if (!(Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
-        return $false
-    }
-
-    $sourceInfo = Get-Item -LiteralPath $SourcePath
-    $destinationInfo = Get-Item -LiteralPath $DestinationPath
-    if ($sourceInfo.Length -ne $destinationInfo.Length) {
-        return $false
-    }
-
-    $sourceHash = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash
-    $destinationHash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash
-    return $sourceHash -eq $destinationHash
-}
-
 if (-not $SkipMcpServerBuild) {
     if (!(Test-Path -LiteralPath $mcpServerProject)) {
         throw "MCP server project not found: $mcpServerProject"
@@ -96,10 +75,6 @@ foreach ($file in $files) {
     $destinationDirectory = Split-Path -Parent $destinationPath
     if (!(Test-Path -LiteralPath $destinationDirectory)) {
         New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
-    }
-
-    if (Test-FilesEqual -SourcePath $file.FullName -DestinationPath $destinationPath) {
-        continue
     }
 
     Copy-Item -LiteralPath $file.FullName -Destination $destinationPath -Force

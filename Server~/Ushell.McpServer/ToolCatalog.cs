@@ -49,7 +49,36 @@ internal static class ToolCatalog
             {
                 ["name"] = RequiredString(),
                 ["payload"] = Object()
-            }, "name"))
+            }, "name")),
+            Tool("assign_task", "Creates a human-facing Unity task, waits until it completes, and returns captured matching logs and button invocation records.", Schema(new()
+            {
+                ["description"] = RequiredString(),
+                ["logKeyword"] = RequiredString(),
+                ["completionKeyword"] = RequiredString(),
+                ["buttons"] = Array(Object(new()
+                {
+                    ["label"] = RequiredString(),
+                    ["description"] = String(),
+                    ["expression"] = RequiredString()
+                }, "label", "expression")),
+                ["autoTrigger"] = Object(new()
+                {
+                    ["keyword"] = RequiredString(),
+                    ["description"] = String(),
+                    ["expression"] = RequiredString(),
+                    ["confirm"] = Bool()
+                }, "keyword", "expression"),
+                ["timeoutMs"] = Number()
+            }, "description", "logKeyword", "completionKeyword")),
+            Tool("list_tasks", "Lists AI task summaries from the current Unity Editor process memory.", Schema(new()
+            {
+                ["includeCompleted"] = Bool(),
+                ["limit"] = Number()
+            })),
+            Tool("get_task", "Returns the full AI task record for a task id.", Schema(new()
+            {
+                ["taskId"] = RequiredString()
+            }, "taskId"))
         };
     }
 
@@ -102,5 +131,26 @@ internal static class ToolCatalog
     private static Dictionary<string, object?> Object()
     {
         return new Dictionary<string, object?> { ["type"] = "object" };
+    }
+
+    private static Dictionary<string, object?> Object(Dictionary<string, object?> properties, params string[] required)
+    {
+        Dictionary<string, object?> schema = Object();
+        schema["properties"] = properties;
+        if (required.Length > 0)
+        {
+            schema["required"] = required;
+        }
+
+        return schema;
+    }
+
+    private static Dictionary<string, object?> Array(Dictionary<string, object?> items)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "array",
+            ["items"] = items
+        };
     }
 }

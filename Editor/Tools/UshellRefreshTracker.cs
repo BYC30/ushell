@@ -32,8 +32,13 @@ namespace Ushell.Editor
             }
         }
 
-        public static Dictionary<string, object> ScheduleRefresh(ImportAssetOptions options)
+        public static bool TryScheduleRefresh(ImportAssetOptions options, out Dictionary<string, object> status)
         {
+            if (TryGetActiveStatus(out status))
+            {
+                return false;
+            }
+
             string requestId = Guid.NewGuid().ToString("N");
             EditorPrefs.SetString(RequestIdKey, requestId);
             EditorPrefs.SetString(StateKey, StateScheduled);
@@ -44,7 +49,21 @@ namespace Ushell.Editor
             EditorPrefs.DeleteKey(CompletedUtcKey);
 
             EditorApplication.delayCall += ExecutePendingRefresh;
-            return GetStatus(requestId);
+            status = GetStatus(requestId);
+            return true;
+        }
+
+        public static bool TryGetActiveStatus(out Dictionary<string, object> status)
+        {
+            string currentState = EditorPrefs.GetString(StateKey, null);
+            if (IsActiveState(currentState))
+            {
+                status = GetLatestStatus();
+                return true;
+            }
+
+            status = null;
+            return false;
         }
 
         public static Dictionary<string, object> GetLatestStatus()
@@ -102,6 +121,13 @@ namespace Ushell.Editor
 
             EditorPrefs.SetString(StateKey, StateCompleted);
             EditorPrefs.SetString(CompletedUtcKey, DateTime.UtcNow.ToString("O"));
+        }
+
+        private static bool IsActiveState(string state)
+        {
+            return string.Equals(state, StateScheduled, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(state, StateRefreshing, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(state, StateWaitingForIdle, StringComparison.OrdinalIgnoreCase);
         }
 
         private static Dictionary<string, object> BuildStatus(string requestedId, bool requireMatch)

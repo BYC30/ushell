@@ -1,0 +1,21 @@
+{
+  "name": "Ushell.Editor.Tests",
+  "rootNamespace": "Ushell.Editor.Tests",
+  "references": [
+    "Ushell.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

@@ -38,9 +38,11 @@ namespace Ushell.Editor
                 }
 
                 _pipeName = UshellPaths.BridgePipeName;
-                _cancellationTokenSource = new CancellationTokenSource();
+                CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
+                CancellationToken cancellationToken = cancellationTokenSource.Token;
+                _cancellationTokenSource = cancellationTokenSource;
                 string pipeName = _pipeName;
-                _listenThread = new Thread(() => ListenLoop(_cancellationTokenSource.Token))
+                _listenThread = new Thread(() => ListenLoop(cancellationToken))
                 {
                     IsBackground = true,
                     Name = "UshellEditorBridgeServer"
@@ -52,20 +54,34 @@ namespace Ushell.Editor
             }
         }
 
-        public static void Stop()
+        public static void Stop(string reason = "unspecified")
         {
+            System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
             CancellationTokenSource cancellationTokenSource;
+            Thread listenThread;
             List<NamedPipeServerStream> pipes;
+            int activeConnectionCount;
+            string pipeName;
             lock (SyncRoot)
             {
                 cancellationTokenSource = _cancellationTokenSource;
+                listenThread = _listenThread;
+                pipeName = _pipeName;
                 _cancellationTokenSource = null;
                 _listenThread = null;
                 _state = "stopped";
+                activeConnectionCount = _activeConnections;
+                if (activeConnectionCount > 0)
+                {
+                    _lastDisconnectedUtc = DateTime.UtcNow.ToString("O");
+                }
+
+                _activeConnections = 0;
                 pipes = ActivePipes.ToList();
                 ActivePipes.Clear();
             }
 
+            Debug.Log($"[ushell.reload] Bridge stop begin. reason={reason}, pipes={pipes.Count}, activeConnections={activeConnectionCount}, listenerAlive={listenThread != null && listenThread.IsAlive}");
             try
             {
                 cancellationTokenSource?.Cancel();
@@ -75,6 +91,8 @@ namespace Ushell.Editor
                 // Best effort shutdown.
             }
 
+            bool listenerWakeAttempted = listenThread != null && listenThread.IsAlive;
+            bool listenerWakeSucceeded = !listenerWakeAttempted || TryWakeListener(pipeName);
             foreach (NamedPipeServerStream pipe in pipes)
             {
                 try
@@ -87,7 +105,22 @@ namespace Ushell.Editor
                 }
             }
 
+            if (listenThread != null && listenThread.IsAlive)
+            {
+                listenThread.Join(500);
+            }
+
+            bool listenerStopped = listenThread == null || !listenThread.IsAlive;
             cancellationTokenSource?.Dispose();
+            stopwatch.Stop();
+            if (listenerStopped)
+            {
+                Debug.Log($"[ushell.reload] Bridge stop complete. reason={reason}, elapsedMs={stopwatch.ElapsedMilliseconds}, wakeAttempted={listenerWakeAttempted}, wakeSucceeded={listenerWakeSucceeded}");
+            }
+            else
+            {
+                Debug.LogError($"[ushell.reload] Bridge listener did not stop within 500 ms. reason={reason}, elapsedMs={stopwatch.ElapsedMilliseconds}, wakeSucceeded={listenerWakeSucceeded}");
+            }
         }
 
         public static Dictionary<string, object> GetStatusSnapshot()
@@ -124,10 +157,23 @@ namespace Ushell.Editor
 
                     lock (SyncRoot)
                     {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            return;
+                        }
+
                         ActivePipes.Add(pipe);
                     }
 
+                    // Unity 2019's Mono implementation is unreliable for asynchronous pipe
+                    // waits. Stop() wakes this synchronous wait with a local client connection.
                     pipe.WaitForConnection();
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     NamedPipeServerStream connectedPipe = pipe;
                     pipe = null;
 
@@ -140,11 +186,21 @@ namespace Ushell.Editor
                 }
                 catch (IOException exception)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     RecordTransientError(exception.Message);
                     SleepAfterListenError(cancellationToken);
                 }
                 catch (Exception exception)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     RecordTransientError(exception.Message);
                     SleepAfterListenError(cancellationToken);
                 }
@@ -173,9 +229,11 @@ namespace Ushell.Editor
                         return;
                     }
 
-                    object response = await ProcessRequestAsync(line);
+                    Action afterResponseAction = null;
+                    object response = await ProcessRequestAsync(line, action => afterResponseAction = action);
                     await writer.WriteLineAsync(MiniJson.Serialize(response));
                     RecordSuccessfulResponse();
+                    afterResponseAction?.Invoke();
                 }
             }
             catch (Exception exception)
@@ -189,7 +247,7 @@ namespace Ushell.Editor
             }
         }
 
-        private static async Task<Dictionary<string, object>> ProcessRequestAsync(string line)
+        private static async Task<Dictionary<string, object>> ProcessRequestAsync(string line, Action<Action> setAfterResponseAction)
         {
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -217,7 +275,7 @@ namespace Ushell.Editor
                             { "tools", UshellToolRegistry.GetAll().Select(tool => tool.ToMcpDictionary()).ToArray() }
                         }));
                     case "tools/call":
-                        return Success(await InvokeToolAsync(parameters));
+                        return Success(await InvokeToolAsync(parameters, setAfterResponseAction));
                     case "bridge/status":
                         return Success(await UshellEditorDispatcher.InvokeAsync(CreateBridgeStatus));
                     case "refresh/status":
@@ -225,6 +283,19 @@ namespace Ushell.Editor
                         {
                             string requestId = parameters.TryGetValue("requestId", out object requestIdValue) ? requestIdValue?.ToString() : null;
                             return UshellRefreshTracker.GetStatus(requestId);
+                        }));
+                    case "task/status":
+                        return Success(await UshellEditorDispatcher.InvokeAsync(() =>
+                        {
+                            string taskId = parameters.TryGetValue("taskId", out object taskIdValue) ? taskIdValue?.ToString() : null;
+                            return UshellTaskStore.GetStatus(taskId);
+                        }));
+                    case "task/timeout":
+                        return Success(await UshellEditorDispatcher.InvokeAsync(() =>
+                        {
+                            string taskId = parameters.TryGetValue("taskId", out object taskIdValue) ? taskIdValue?.ToString() : null;
+                            UshellTaskStore.MarkTimedOut(taskId);
+                            return UshellTaskStore.GetStatus(taskId);
                         }));
                     default:
                         return Error("UNKNOWN_BRIDGE_METHOD", $"Unsupported bridge method '{method}'.");
@@ -236,7 +307,9 @@ namespace Ushell.Editor
             }
         }
 
-        private static async Task<Dictionary<string, object>> InvokeToolAsync(Dictionary<string, object> parameters)
+        private static async Task<Dictionary<string, object>> InvokeToolAsync(
+            Dictionary<string, object> parameters,
+            Action<Action> setAfterResponseAction)
         {
             if (!parameters.TryGetValue("name", out object nameValue))
             {
@@ -256,6 +329,11 @@ namespace Ushell.Editor
             UshellToolEnvelope toolResult = tool.AsyncHandler != null
                 ? await UshellEditorDispatcher.InvokeAsync(() => tool.AsyncHandler(arguments))
                 : await UshellEditorDispatcher.InvokeAsync(() => Task.FromResult(tool.Handler(arguments)));
+            if (toolResult.Success && tool.AfterResponseHandler != null)
+            {
+                setAfterResponseAction(() => UshellEditorDispatcher.Post(() => tool.AfterResponseHandler(arguments)));
+            }
+
             return toolResult.ToDictionary();
         }
 
@@ -264,6 +342,7 @@ namespace Ushell.Editor
             return new Dictionary<string, object>
             {
                 { "unityVersion", Application.unityVersion },
+                { "minimumSupportedUnityVersion", "2019.4" },
                 { "projectPath", UshellPaths.ProjectPath },
                 { "isPlaying", EditorApplication.isPlaying },
                 { "isCompiling", EditorApplication.isCompiling },
@@ -357,6 +436,31 @@ namespace Ushell.Editor
             catch
             {
                 // Best effort throttling.
+            }
+        }
+
+        private static bool TryWakeListener(string pipeName)
+        {
+            if (string.IsNullOrWhiteSpace(pipeName))
+            {
+                return false;
+            }
+
+            try
+            {
+                using (NamedPipeClientStream wakePipe = new NamedPipeClientStream(
+                    ".",
+                    pipeName,
+                    PipeDirection.InOut,
+                    PipeOptions.None))
+                {
+                    wakePipe.Connect(100);
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
 
